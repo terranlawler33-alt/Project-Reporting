@@ -1,0 +1,159 @@
+{
+  "app_name": "PaintOps Daily",
+  "personality": "1 iOS-Native Clean",
+  "personality_one_liner": "A professional, rugged yet clean command center built for speed and clarity on the job site.",
+  "color": {
+    "surface": "#F9FAFB",
+    "onSurface": "#111827",
+    "surfaceSecondary": "#FFFFFF",
+    "onSurfaceSecondary": "#111827",
+    "surfaceTertiary": "#F3F4F6",
+    "onSurfaceTertiary": "#374151",
+    "surfaceInverse": "#1F2937",
+    "onSurfaceInverse": "#FFFFFF",
+    "brand": "#D97706",
+    "onBrand": "#FFFFFF",
+    "brandPrimary": "#D97706",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#B45309",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#FEF3C7",
+    "onBrandTertiary": "#92400E",
+    "success": "#059669",
+    "onSuccess": "#FFFFFF",
+    "warning": "#D97706",
+    "onWarning": "#FFFFFF",
+    "error": "#DC2626",
+    "onError": "#FFFFFF",
+    "info": "#4B5563",
+    "onInfo": "#FFFFFF",
+    "border": "#E5E7EB",
+    "borderStrong": "#D1D5DB",
+    "divider": "#F3F4F6",
+    "muted": "#6B7280"
+  },
+  "typography": {
+    "displayFontFamily": "Plus Jakarta Sans",
+    "textFontFamily": "Plus Jakarta Sans",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Use generous iOS-native rhythms. Content must never touch edges without 'lg' padding. Stick to single-column card layouts for maximum readability.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": 1,
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": true,
+    "do's": [
+      "Apply to sticky headers over scrolling content",
+      "Apply to bottom tab bar",
+      "Apply to the Weather Hero widget background to ensure text remains readable",
+      "Apply to bottom sheet handles"
+    ],
+    "dont's": [
+      "Do not apply to form inputs or general list cards",
+      "Do not apply to primary buttons",
+      "Ensure underlying content is fully blurred out"
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler",
+    "map": "react-native-maps"
+  },
+  "screens": [
+    {
+      "name": "Home",
+      "purpose": "Hub for quick actions, weather overview, and today's task itinerary.",
+      "states": {
+        "loading": "Centered spinner",
+        "empty": "Illustration + 'No active tasks today' + 'Start Day' button",
+        "error": "Message + Retry button"
+      },
+      "layout": "Scrollable layout. Top section is a Hero Weather Widget utilizing the 'weather_hero' image with a top-down gradient scrim. Directly below, prominently display the three quick actions (Start Day, Add Break, End Day) as full-width horizontal pill buttons or a 3-column grid depending on space. Below actions, display 'Today's Plan' as a list of single-column cards."
+    },
+    {
+      "name": "Reports",
+      "purpose": "Feed of daily reports featuring AI-generated summaries and report composer.",
+      "states": {
+        "loading": "Skeleton list of cards",
+        "empty": "Clipboard Icon + 'No reports yet' + Primary CTA",
+        "error": "Error reading reports + Retry"
+      },
+      "layout": "Sticky glass header. Scrollable list of report cards containing AI tags. Sticky primary CTA 'Create Report' pinned to the bottom (within a fixed container, safe-area aware) so it is always accessible."
+    },
+    {
+      "name": "Map",
+      "purpose": "Job site tracking with customer info attached to GPS coordinates.",
+      "states": {
+        "loading": "Map loading overlay",
+        "empty": "Map centered on current location with no pins",
+        "error": "GPS Error + Retry"
+      },
+      "layout": "Full-screen 'react-native-maps' component. Implement a split-view style: map on the background, and a bottom sheet ('@gorhom/bottom-sheet') that slides up displaying a list of nearby job sites and active visits. Map pins should use the 'brandPrimary' color."
+    },
+    {
+      "name": "Profile",
+      "purpose": "User management, export views, and admin role settings.",
+      "states": {
+        "loading": "Centered spinner",
+        "empty": "Standard profile structure",
+        "error": "Failed to load profile + Retry"
+      },
+      "layout": "Top section features the 'profile_avatar' image. Below, a grouped list of settings/admin options. Use tinted icon containers ('brandTertiary' bg) for the leading icons in each setting row. Ensure the email digest indicator and export buttons are clearly separated."
+    }
+  ],
+  "images": {
+    "weather_hero": {
+      "url": "https://images.unsplash.com/photo-1505533542167-8c89838bb19e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMG1vcm5pbmclMjBsaWdodCUyMHNreSUyMHdlYXRoZXIlMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc5MDY1MTk5NHww&ixlib=rb-4.1.0&q=85",
+      "alt": "Soft white and grey clouds against a pale yellow sky"
+    },
+    "profile_avatar": {
+      "url": "https://images.unsplash.com/photo-1646227655685-a530813759b3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzd8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBjb25zdHJ1Y3Rpb24lMjB3b3JrZXIlMjBwcm9maWxlJTIwcG9ydHJhaXR8ZW58MHx8fHwxNzkwNjUxOTk0fDA&ixlib=rb-4.1.0&q=85",
+      "alt": "a man wearing a white hard hat and black jacket"
+    }
+  },
+  "haptics": {
+    "primary_button_press": "impactLight",
+    "tab_switch": "selection",
+    "bottom_sheet_snap": "impactMedium",
+    "report_submit_success": "notificationSuccess",
+    "action_pill_press": "impactLight"
+  },
+  "instructions_to_main_agent": [
+    "Design follows '1 iOS-Native Clean' with a professional construction feel (Ochre/Mustard accents, highly legible Plus Jakarta Sans).",
+    "CRITICAL: Do NOT use ANY shade of blue (including navy/indigo) anywhere. Use Near-Black (#111827) for primary text and Inverse surfaces.",
+    "Implement the split-view Map pattern (Map + Bottom Sheet) as researched; it's the standard for managing field operations spatially without losing context.",
+    "Ensure the Weather Hero widget has a strict gradient-to-dark scrim pattern so weather data overlaid on it remains perfectly legible.",
+    "Apply 'brandTertiary' tinted squares behind icons in Profile setting rows; bare icons look unfinished.",
+    "Keep 'Create Report' button in the Reports tab sticky at the bottom, overlapping the scrolling content (with appropriate bottom padding on the list)."
+  ]
+}
