@@ -39,6 +39,13 @@ export default function ProfileScreen() {
             subtitle="Log calls & texts with subs and customers"
             onPress={() => router.push("/sms-log")}
           />
+          <Row
+            testID="customers-nav"
+            icon="people-circle"
+            title="Customer Directory"
+            subtitle="Save recurring customers for quick check-ins"
+            onPress={() => router.push("/admin/customers")}
+          />
         </Section>
 
         {user?.is_admin && (
@@ -49,6 +56,13 @@ export default function ProfileScreen() {
               title="Manage Users"
               subtitle="Create roles: Owner, Ops, Sales, Production, Labor, PM"
               onPress={() => router.push("/admin/users")}
+            />
+            <Row
+              testID="admin-digest-nav"
+              icon="mail-unread"
+              title="Weekly Digest"
+              subtitle="AI-roll up last 7 days & email the owner"
+              onPress={() => router.push("/admin/digest")}
             />
           </Section>
         )}

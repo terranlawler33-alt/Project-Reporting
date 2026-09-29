@@ -12,7 +12,8 @@
       "bundleIdentifier": "com.emergent.projectdigest.lz3y9s",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Tag daily reports with job site location.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "Tag daily reports with job site location."
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Tag daily reports with job site location.",
+        "NSMicrophoneUsageDescription": "Dictate report highlights hands-free."
       }
     },
     "android": {
@@ -23,7 +24,8 @@
       "package": "com.emergent.projectdigest.lz3y9s",
       "permissions": [
         "ACCESS_COARSE_LOCATION",
-        "ACCESS_FINE_LOCATION"
+        "ACCESS_FINE_LOCATION",
+        "RECORD_AUDIO"
       ]
     },
     "web": {
@@ -53,7 +55,13 @@
           "locationAlwaysAndWhenInUsePermission": "Tag daily reports with job site location."
         }
       ],
-      "@react-native-vector-icons/ionicons"
+      "@react-native-vector-icons/ionicons",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Dictate report highlights hands-free while driving."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

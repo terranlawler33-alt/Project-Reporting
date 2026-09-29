@@ -71,4 +71,19 @@ export const api = {
   getReport: (id: string) => apiRequest<any>(`/reports/${id}`),
   createReport: (payload: any) =>
     apiRequest<any>("/reports", { method: "POST", body: JSON.stringify(payload) }),
+  listCustomers: () => apiRequest<any[]>("/customers"),
+  createCustomer: (payload: any) =>
+    apiRequest<any>("/customers", { method: "POST", body: JSON.stringify(payload) }),
+  deleteCustomer: (id: string) =>
+    apiRequest<{ ok: boolean }>(`/customers/${id}`, { method: "DELETE" }),
+  sendWeeklyDigest: (recipient_emails: string[]) =>
+    apiRequest<any>("/digest/weekly", {
+      method: "POST",
+      body: JSON.stringify({ recipient_emails }),
+    }),
+  addSignature: (report_id: string, customer_name: string, signature_base64: string) =>
+    apiRequest<any>(`/reports/${report_id}/signature`, {
+      method: "PATCH",
+      body: JSON.stringify({ customer_name, signature_base64 }),
+    }),
 };

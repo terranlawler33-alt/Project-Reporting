@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 2: full backend + frontend testing for 5 new PaintOps features (Voice-to-Notes, Customer Directory, Weekly Digest, Live Map Pins, Signature Capture). Backend: 35/35 pytest passed (15 new-feature tests + 20 regression). Frontend: mobile E2E walked through admin login -> Customer Directory (add + list) -> Weekly Digest (AI text generated + email delivered@resend.dev shown) -> Map (Live map container + Pick from directory populates customer_name/address/project_code + Save Visit adds a new pin) -> Report composer voice-mic-button renders and tap does not crash (toggles to Stop) -> Report detail signature form opens with customer name field. NOTE: Fixed one real bug found during backend testing (see 'updated_files' + rca_of_issue).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "report/[id].tsx (signature pad)", "issues": ["react-native-signature-canvas depends on react-native-webview which is unsupported on Expo web preview - the signature-pad area shows 'React Native WebView does not support this platform.' Not a bug per se (signature is a native-only feature), but for web QA the signature draw+save path can only be validated on native/Expo Go. Backend PATCH /reports/{id}/signature is fully verified."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_new_features.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_new_features.xml",
+    "/app/test_reports/pytest/pytest_regression.xml"
+  ],
+  "action_items": [
+    "None blocking. Optional: mock/hide signature pad on web (Platform.OS === 'web') and show a note like 'Signature capture available on native app' to avoid the WebView-unsupported message.",
+    "Carried over from iteration_1 (not addressed yet): app/(tabs)/index.tsx should use useFocusEffect to reload active break banner after break-modal returns."
+  ],
+  "critical_code_review_comments": [
+    "server.py has grown to 1027 lines. As features keep piling up (customers, digest, transcribe, signature) it should be split into routers (customers.py, digest.py, transcribe.py, reports.py, auth.py) for maintainability.",
+    "DailyReport pydantic model was missing 'signature' field - because response_model=DailyReport is applied on GET /reports/{id}, this stripped signatures out of the response even though PATCH stored them. Fixed by adding `signature: Optional[dict] = None`. Same fix now flows through GET /reports as well.",
+    "POST /api/digest/weekly runs GPT-5.4 + Resend synchronously (avg ~10-20s). Consider making the LLM call a background task and returning a job id if UI ever needs to feel snappier."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (added signature: Optional[dict] = None to DailyReport model so PATCH /reports/{id}/signature is visible via GET /reports/{id})",
+    "/app/backend/tests/test_new_features.py (new - 15 pytest tests for customers, transcribe validation, signature, weekly digest)"
+  ],
+  "success_rate": {"backend": "100% (35/35)", "frontend": "100% of testable flows on web preview"},
+  "seed_data_creation": "Admin auto-seeded. Tests created: 1 UI customer (UITEST Acme <ts>), 2 API customers (TEST_Acme Painters + TEST_ToDelete which was then deleted), 1 signature report (SIG-TEST), 1 additional visit tied to TEST_Acme customer via Pick-from-directory, 1 weekly digest doc stored in db.digests with delivered@resend.dev in email_sent_to.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend at EXPO_PUBLIC_BACKEND_URL=https://project-digest-7.preview.emergentagent.com. Admin: admin@paintops.com/Admin@12345 (auto-seeded). Prod user: production@paintops.com/Prod@12345 (created by tests). Run pytest with `-n 0` (pytest.ini forces -n 2 loadscope which breaks module-scoped State fixture). Do NOT hit /api/transcribe with real audio - only assert 400 (empty) / 415 (bad ext) / 401 (no auth) to conserve Whisper credits. Digest endpoint takes ~15-25s (GPT-5.4 + Resend). Signature pad canvas on web shows 'WebView not supported' - by design. All new-feature testIDs used: customers-nav, admin-digest-nav, customers-add-toggle, customer-name/address/project/save/back, digest-emails/send/result/back, live-map-container, new-visit-toggle, customer-picker-toggle, pick-customer-<id>, visit-lat/lon/customer/address/project/save-visit, map-visit-<id>, voice-mic-button, signature-start/customer-name/save/clear/cancel, report-card-<id>, report-signature.",
+  "rca_of_issue": "Bug found & fixed by testing agent: GET /api/reports/{id} did not return `signature` even though PATCH stored it. Root cause: get_report/list_reports use `response_model=DailyReport`, and the DailyReport pydantic model did not declare a `signature` field, so pydantic silently dropped it from the response. Fix (applied): added `signature: Optional[dict] = None` to DailyReport in /app/backend/server.py. Regression tested: 35/35 pytest passing including test_get_report_includes_signature after the fix; existing report list endpoints unaffected."
+}

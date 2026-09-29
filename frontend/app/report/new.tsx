@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import {
   View,
   Text,
@@ -10,11 +10,20 @@ import {
   Platform,
   ActivityIndicator,
   Switch,
+  Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import Ionicons from "@react-native-vector-icons/ionicons";
+import {
+  useAudioRecorder,
+  useAudioRecorderState,
+  RecordingPresets,
+  setAudioModeAsync,
+  AudioModule,
+} from "expo-audio";
 import { api } from "@/src/api";
+import { transcribeAudio } from "@/src/voice";
 import { colors, spacing, radius } from "@/src/theme";
 
 export default function NewReport() {
@@ -33,6 +42,48 @@ export default function NewReport() {
   const [includeSms, setIncludeSms] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [transcribing, setTranscribing] = useState(false);
+
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorderState = useAudioRecorderState(recorder);
+
+  const toggleRecord = async () => {
+    if (recorderState.isRecording) {
+      try {
+        await recorder.stop();
+        const uri = recorder.uri;
+        if (!uri) return;
+        setTranscribing(true);
+        try {
+          const text = await transcribeAudio(uri);
+          if (text) {
+            setHighlights((prev) => (prev ? `${prev}\n${text}` : text));
+          } else {
+            setError("No speech detected. Try again.");
+          }
+        } catch (e: any) {
+          setError(e.message || "Transcription failed");
+        } finally {
+          setTranscribing(false);
+        }
+      } catch (e: any) {
+        setError(e.message || "Recording failed");
+      }
+    } else {
+      try {
+        const perm = await AudioModule.requestRecordingPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert("Microphone permission required", "Enable mic access in settings to dictate notes.");
+          return;
+        }
+        await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
+        await recorder.prepareToRecordAsync();
+        recorder.record();
+      } catch (e: any) {
+        setError(e.message || "Failed to start recording");
+      }
+    }
+  };
 
   const generate = async () => {
     setError(null);
@@ -98,7 +149,32 @@ export default function NewReport() {
           placeholderTextColor={colors.muted}
           style={styles.input}
         />
-        <Text style={styles.label}>Highlights (tasks completed)</Text>
+        <View style={styles.labelRow}>
+          <Text style={styles.label}>Highlights (tasks completed)</Text>
+          <Pressable
+            testID="voice-mic-button"
+            onPress={toggleRecord}
+            disabled={transcribing}
+            style={[
+              styles.micBtn,
+              recorderState.isRecording && styles.micBtnRecording,
+              transcribing && { opacity: 0.7 },
+            ]}
+          >
+            {transcribing ? (
+              <ActivityIndicator size="small" color={colors.onBrandPrimary} />
+            ) : (
+              <Ionicons
+                name={recorderState.isRecording ? "stop" : "mic"}
+                size={16}
+                color={colors.onBrandPrimary}
+              />
+            )}
+            <Text style={styles.micBtnText}>
+              {transcribing ? "Transcribing…" : recorderState.isRecording ? "Stop" : "Dictate"}
+            </Text>
+          </Pressable>
+        </View>
         <TextInput
           testID="report-highlights"
           value={highlights}
@@ -238,6 +314,24 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
     marginBottom: spacing.xs,
   },
+  labelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: spacing.md,
+    marginBottom: spacing.xs,
+  },
+  micBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: colors.brandPrimary,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+  },
+  micBtnRecording: { backgroundColor: colors.error },
+  micBtnText: { color: colors.onBrandPrimary, fontWeight: "700", fontSize: 12 },
   input: {
     backgroundColor: colors.surfaceSecondary,
     borderRadius: radius.md,

@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
-import { View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, Platform } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, Platform, TextInput } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import Ionicons from "@react-native-vector-icons/ionicons";
+import Signature from "react-native-signature-canvas";
+import { Image } from "expo-image";
 import { api } from "@/src/api";
 import { getToken } from "@/src/auth/storage";
 import { colors, spacing, radius } from "@/src/theme";
@@ -13,13 +15,22 @@ export default function ReportDetail() {
   const router = useRouter();
   const [report, setReport] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [showSign, setShowSign] = useState(false);
+  const [customerName, setCustomerName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const sigRef = useRef<any>(null);
+
+  const reload = async () => {
+    if (!id) return;
+    try {
+      const r = await api.getReport(id);
+      setReport(r);
+    } catch {}
+  };
 
   useEffect(() => {
     if (!id) return;
-    api.getReport(id).then((r) => {
-      setReport(r);
-      setLoading(false);
-    }).catch(() => setLoading(false));
+    reload().finally(() => setLoading(false));
   }, [id]);
 
   const downloadWorkday = async () => {
@@ -35,8 +46,21 @@ export default function ReportDetail() {
       a.click();
       URL.revokeObjectURL(objectUrl);
     } else {
-      // Native: just fetch and log; would ideally use expo-file-system + sharing
       await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    }
+  };
+
+  const onSignatureOK = async (dataUrl: string) => {
+    if (!customerName.trim()) return;
+    setSaving(true);
+    try {
+      const base64 = dataUrl.startsWith("data:") ? dataUrl : `data:image/png;base64,${dataUrl}`;
+      await api.addSignature(id!, customerName.trim(), base64);
+      await reload();
+      setShowSign(false);
+      setCustomerName("");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -74,9 +98,7 @@ export default function ReportDetail() {
           <Ionicons name="sparkles" size={12} color={colors.onBrandTertiary} />
           <Text style={styles.aiTagText}>AI Summary</Text>
         </View>
-        <Text style={styles.title}>
-          {report.project_name || report.project_code || "Daily Report"}
-        </Text>
+        <Text style={styles.title}>{report.project_name || report.project_code || "Daily Report"}</Text>
         <Text style={styles.subtitle}>
           {report.author_name} · {report.author_role}
         </Text>
@@ -84,9 +106,7 @@ export default function ReportDetail() {
         {report.email_sent_to?.length ? (
           <View style={styles.emailSentBox} testID="email-sent-box">
             <Ionicons name="mail" size={14} color={colors.success} />
-            <Text style={styles.emailSentText}>
-              Sent to: {report.email_sent_to.join(", ")}
-            </Text>
+            <Text style={styles.emailSentText}>Sent to: {report.email_sent_to.join(", ")}</Text>
           </View>
         ) : null}
 
@@ -139,18 +159,108 @@ export default function ReportDetail() {
                 <Text style={styles.miniTitle}>
                   {s.contact_name} ({s.contact_role}) · {s.category}
                 </Text>
-                <Text style={styles.miniSub}>
-                  {s.channel} {s.direction}
-                </Text>
+                <Text style={styles.miniSub}>{s.channel} {s.direction}</Text>
                 <Text style={styles.miniNotes}>{s.content}</Text>
               </View>
             ))}
           </MetaCard>
         ) : null}
+
+        {/* Signature section */}
+        <MetaCard title="Customer Sign-off" testID="report-signature">
+          {report.signature ? (
+            <View>
+              <Text style={styles.miniTitle}>{report.signature.customer_name}</Text>
+              <Text style={styles.miniSub}>
+                Signed {new Date(report.signature.signed_at).toLocaleString()}
+              </Text>
+              <Image
+                source={{ uri: report.signature.signature_base64 }}
+                style={styles.signatureImage}
+                contentFit="contain"
+              />
+            </View>
+          ) : showSign ? (
+            <View style={{ gap: spacing.sm }}>
+              <TextInput
+                testID="signature-customer-name"
+                value={customerName}
+                onChangeText={setCustomerName}
+                placeholder="Customer name"
+                placeholderTextColor={colors.muted}
+                style={styles.sigInput}
+              />
+              <View style={styles.sigPadWrap}>
+                <Signature
+                  ref={sigRef}
+                  onOK={onSignatureOK}
+                  onEmpty={() => {}}
+                  descriptionText="Sign above"
+                  webStyle={sigWebStyle}
+                  autoClear={false}
+                  imageType="image/png"
+                />
+              </View>
+              <View style={{ flexDirection: "row", gap: spacing.sm }}>
+                <Pressable
+                  testID="signature-cancel"
+                  onPress={() => {
+                    setShowSign(false);
+                    setCustomerName("");
+                  }}
+                  style={[styles.smallBtn, { backgroundColor: colors.surfaceTertiary }]}
+                >
+                  <Text style={{ color: colors.onSurface, fontWeight: "700" }}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  testID="signature-clear"
+                  onPress={() => sigRef.current?.clearSignature?.()}
+                  style={[styles.smallBtn, { backgroundColor: colors.surfaceTertiary }]}
+                >
+                  <Text style={{ color: colors.onSurface, fontWeight: "700" }}>Clear</Text>
+                </Pressable>
+                <Pressable
+                  testID="signature-save"
+                  onPress={() => sigRef.current?.readSignature?.()}
+                  disabled={!customerName.trim() || saving}
+                  style={[
+                    styles.smallBtn,
+                    { backgroundColor: colors.brandPrimary },
+                    (!customerName.trim() || saving) && { opacity: 0.6 },
+                  ]}
+                >
+                  {saving ? (
+                    <ActivityIndicator color={colors.onBrandPrimary} size="small" />
+                  ) : (
+                    <Text style={{ color: colors.onBrandPrimary, fontWeight: "700" }}>Save</Text>
+                  )}
+                </Pressable>
+              </View>
+            </View>
+          ) : (
+            <Pressable
+              testID="signature-start"
+              onPress={() => setShowSign(true)}
+              style={styles.signCTA}
+            >
+              <Ionicons name="create" size={16} color={colors.onBrandPrimary} />
+              <Text style={{ color: colors.onBrandPrimary, fontWeight: "700" }}>
+                Capture Customer Signature
+              </Text>
+            </Pressable>
+          )}
+        </MetaCard>
       </ScrollView>
     </View>
   );
 }
+
+const sigWebStyle = `
+  .m-signature-pad { box-shadow: none; border: 1px solid #E5E7EB; border-radius: 12px; }
+  .m-signature-pad--body { border: none; }
+  .m-signature-pad--footer { display: none; margin: 0; }
+  body,html { width: 100%; height: 100%; }
+`;
 
 function MetaCard({ title, children, testID }: { title: string; children: React.ReactNode; testID?: string }) {
   return (
@@ -232,4 +342,41 @@ const styles = StyleSheet.create({
   miniTitle: { fontWeight: "700", color: colors.onSurface, fontSize: 13 },
   miniSub: { color: colors.muted, fontSize: 12, marginTop: 2 },
   miniNotes: { color: colors.onSurfaceTertiary, fontSize: 12, marginTop: 4, fontStyle: "italic" },
+  signatureImage: {
+    width: "100%",
+    height: 160,
+    backgroundColor: colors.surfaceTertiary,
+    borderRadius: radius.md,
+    marginTop: spacing.sm,
+  },
+  sigInput: {
+    backgroundColor: colors.surfaceTertiary,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    color: colors.onSurface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    fontSize: 14,
+  },
+  sigPadWrap: {
+    height: 220,
+    borderRadius: radius.md,
+    overflow: "hidden",
+    backgroundColor: colors.surfaceTertiary,
+  },
+  smallBtn: {
+    flex: 1,
+    padding: spacing.sm + 2,
+    borderRadius: radius.md,
+    alignItems: "center",
+  },
+  signCTA: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    padding: spacing.md,
+    backgroundColor: colors.brandPrimary,
+    borderRadius: radius.md,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 });

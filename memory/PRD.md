@@ -1,38 +1,43 @@
 # PaintOps Daily - PRD
 
 ## Overview
-Daily reporting mobile app for a painting/construction company. Field managers, ops, and owners share AI-generated daily summaries with GPS visits, breaks, communications logs, and weather context.
+Daily reporting mobile app for a painting/construction company. Field managers, ops, and owners share AI-generated daily summaries with GPS visits, breaks, communications logs, weather, voice-dictated notes, customer directory, weekly executive digest, live map pins, and customer signature capture.
 
 ## Stack
 - Expo Router (React Native) frontend, iOS + Android + Web
 - FastAPI + MongoDB backend
-- Emergent Universal LLM Key for GPT 5.4 summaries
-- Emergent Resend for email digest
-- Open-Meteo for weather (no API key)
+- Emergent Universal LLM Key (GPT 5.4 summaries + digests, Whisper-1 transcription)
+- Emergent Resend for daily & weekly emails
+- Open-Meteo for weather
+- react-native-maps for pins on native; chip fallback on web
 
 ## Roles
 Owner, Operations, Sales, Production, Labor (Subcontractor), Project Manager.
-Admin can create users. Owner/Ops/PM see all reports; others see only their own.
+Admin creates users. Owner/Ops/PM see all reports; others see only their own.
 
-## Features (MVP)
+## Features
+### Core (v1)
 - Email/password auth (JWT) with role-based access
-- Home hub: weather widget (GPS), quick actions (Start Day / Add Break / End Day), today's activity
-- Interaction Map: GPS-tagged customer visits with notes and project code, end visit
-- Break tracker: Bathroom / Lunch / Personal / Admin Call with reasons + call details block
-- Communications Log: manual entry of SMS/Call/Email with category, direction, content
-- Report Composer: pulls today's visits/breaks/sms/weather + manual highlights/delays/change orders → GPT 5.4 AI summary → emails to management via Resend
-- Report detail: AI summary + all embedded sections + Workday CSV export
-- Admin: create users with role/title/dept/job code
+- Home hub: weather widget, quick actions, today's activity, active-break banner
+- Interaction Map: GPS check-in with customer info & project code
+- Break tracker: Bathroom / Lunch / Personal / Admin Call
+- Communications Log: SMS/Call/Email with category & direction
+- Report Composer → GPT 5.4 AI summary + Resend email to management
+- Report detail + Workday CSV export
+- Admin: create users with role/title/department/job code
 
-## Integrations
-- Emergent LLM Key (GPT 5.4) for AI summary
-- Emergent Resend for email digest
-- Open-Meteo for weather
-- expo-location for GPS
+### v2 additions
+- **Voice-to-Notes**: mic button on Report composer (expo-audio → /api/transcribe → Whisper-1)
+- **Customer Directory**: /api/customers CRUD + Map pick-from-list
+- **Weekly Digest**: /api/digest/weekly (admin) rolls last 7 days → GPT 5.4 executive summary → email
+- **Live Map Pins**: react-native-maps with color-coded markers (active=orange, done=green)
+- **Signature Capture**: react-native-signature-canvas → PATCH /api/reports/{id}/signature (base64 PNG stored)
 
-## Deferred (Post-MVP)
-- Native react-native-maps
-- Apple Sign-In (playbook loaded; requires iOS 26+ device build)
-- Nano Banana image generation for report covers
+## Deferred (Post-v2)
 - Real Workday API push (currently CSV export)
 - Real SMS auto-scan (blocked by iOS/Android policies)
+- Apple Sign-In (playbook loaded; requires iOS 26+ real device build)
+- Nano Banana image generation for report covers
+
+## Test credentials
+See `/app/memory/test_credentials.md`.

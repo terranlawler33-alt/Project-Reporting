@@ -14,16 +14,20 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Location from "expo-location";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import * as Haptics from "expo-haptics";
+import { useFocusEffect } from "expo-router";
 import { api } from "@/src/api";
 import { colors, spacing, radius } from "@/src/theme";
+import { PaintOpsMap } from "@/src/components/PaintOpsMap";
 
 export default function MapScreen() {
   const insets = useSafeAreaInsets();
   const [visits, setVisits] = useState<any[]>([]);
+  const [customers, setCustomers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [gpsLoading, setGpsLoading] = useState(false);
+  const [showCustomerPicker, setShowCustomerPicker] = useState(false);
   const [form, setForm] = useState({
     latitude: "",
     longitude: "",
@@ -35,7 +39,9 @@ export default function MapScreen() {
 
   const load = useCallback(async () => {
     try {
-      setVisits(await api.visitsToday());
+      const [v, c] = await Promise.all([api.visitsToday(), api.listCustomers().catch(() => [])]);
+      setVisits(v);
+      setCustomers(c);
     } catch {}
     setLoading(false);
   }, []);
@@ -43,6 +49,12 @@ export default function MapScreen() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load]),
+  );
 
   const captureGps = async () => {
     setGpsLoading(true);
@@ -61,6 +73,16 @@ export default function MapScreen() {
     } finally {
       setGpsLoading(false);
     }
+  };
+
+  const pickCustomer = (c: any) => {
+    setForm((f) => ({
+      ...f,
+      customer_name: c.name,
+      address: c.address || f.address,
+      project_code: c.project_code || f.project_code,
+    }));
+    setShowCustomerPicker(false);
   };
 
   const saveVisit = async () => {
@@ -103,6 +125,20 @@ export default function MapScreen() {
         </Pressable>
       </View>
 
+      <View style={styles.mapWrap} testID="live-map-container">
+        <PaintOpsMap visits={visits} />
+        <View style={styles.mapLegend}>
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: colors.brandPrimary }]} />
+            <Text style={styles.legendText}>Active</Text>
+          </View>
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: colors.success }]} />
+            <Text style={styles.legendText}>Completed</Text>
+          </View>
+        </View>
+      </View>
+
       <ScrollView
         contentContainerStyle={{ padding: spacing.lg, paddingBottom: (insets.bottom || 0) + 100 }}
         keyboardShouldPersistTaps="handled"
@@ -130,11 +166,7 @@ export default function MapScreen() {
                 style={[styles.input, { flex: 1 }]}
                 keyboardType="numeric"
               />
-              <Pressable
-                testID="capture-gps"
-                onPress={captureGps}
-                style={styles.gpsBtn}
-              >
+              <Pressable testID="capture-gps" onPress={captureGps} style={styles.gpsBtn}>
                 {gpsLoading ? (
                   <ActivityIndicator color={colors.onBrandPrimary} size="small" />
                 ) : (
@@ -142,6 +174,34 @@ export default function MapScreen() {
                 )}
               </Pressable>
             </View>
+
+            {customers.length > 0 && (
+              <Pressable
+                testID="customer-picker-toggle"
+                onPress={() => setShowCustomerPicker((s) => !s)}
+                style={styles.pickerBtn}
+              >
+                <Ionicons name="people" size={16} color={colors.brandPrimary} />
+                <Text style={styles.pickerBtnText}>
+                  {showCustomerPicker ? "Hide directory" : `Pick from directory (${customers.length})`}
+                </Text>
+              </Pressable>
+            )}
+            {showCustomerPicker && (
+              <View style={styles.pickerList} testID="customer-picker-list">
+                {customers.map((c) => (
+                  <Pressable
+                    key={c.id}
+                    testID={`pick-customer-${c.id}`}
+                    onPress={() => pickCustomer(c)}
+                    style={styles.pickerItem}
+                  >
+                    <Text style={styles.pickerName}>{c.name}</Text>
+                    {c.address ? <Text style={styles.pickerMeta}>{c.address}</Text> : null}
+                  </Pressable>
+                ))}
+              </View>
+            )}
 
             <TextInput
               testID="visit-customer"
@@ -207,7 +267,7 @@ export default function MapScreen() {
         ) : (
           visits.map((v) => (
             <View key={v.id} style={styles.visitCard} testID={`map-visit-${v.id}`}>
-              <View style={styles.pin}>
+              <View style={[styles.pin, v.ended_at && { backgroundColor: colors.success }]}>
                 <Ionicons name="location" size={18} color={colors.onBrandPrimary} />
               </View>
               <View style={{ flex: 1 }}>
@@ -264,6 +324,30 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  mapWrap: {
+    height: 220,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.md,
+    borderRadius: radius.md,
+    overflow: "hidden",
+    backgroundColor: colors.surfaceTertiary,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  mapLegend: {
+    position: "absolute",
+    bottom: spacing.sm,
+    left: spacing.sm,
+    flexDirection: "row",
+    gap: spacing.sm,
+    backgroundColor: "rgba(255,255,255,0.9)",
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+  },
+  legendItem: { flexDirection: "row", alignItems: "center", gap: 4 },
+  legendDot: { width: 10, height: 10, borderRadius: 5 },
+  legendText: { color: colors.onSurface, fontSize: 10, fontWeight: "600" },
   form: {
     backgroundColor: colors.surfaceSecondary,
     borderRadius: radius.md,
@@ -273,12 +357,7 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     marginBottom: spacing.lg,
   },
-  formTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: colors.onSurface,
-    marginBottom: spacing.xs,
-  },
+  formTitle: { fontSize: 16, fontWeight: "700", color: colors.onSurface, marginBottom: spacing.xs },
   gpsRow: { flexDirection: "row", gap: spacing.sm, alignItems: "center" },
   input: {
     backgroundColor: colors.surfaceTertiary,
@@ -297,6 +376,30 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  pickerBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    backgroundColor: colors.brandTertiary,
+    padding: spacing.sm,
+    borderRadius: radius.md,
+    alignSelf: "flex-start",
+  },
+  pickerBtnText: { color: colors.onBrandTertiary, fontWeight: "700", fontSize: 12 },
+  pickerList: {
+    backgroundColor: colors.surfaceTertiary,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    maxHeight: 200,
+  },
+  pickerItem: {
+    padding: spacing.sm,
+    borderBottomWidth: 0.5,
+    borderBottomColor: colors.divider,
+  },
+  pickerName: { color: colors.onSurface, fontWeight: "700", fontSize: 13 },
+  pickerMeta: { color: colors.muted, fontSize: 11, marginTop: 2 },
   primaryBtn: {
     marginTop: spacing.sm,
     backgroundColor: colors.brandPrimary,

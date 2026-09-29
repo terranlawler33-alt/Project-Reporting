@@ -18,13 +18,15 @@ from urllib.parse import urlparse
 import jwt
 import httpx
 import bcrypt
+import tempfile
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, status, Request, APIRouter
+from fastapi import Depends, FastAPI, HTTPException, status, Request, APIRouter, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, EmailStr, Field
 from motor.motor_asyncio import AsyncIOMotorClient
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from emergentintegrations.llm.openai.speech_to_text import OpenAISpeechToText
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -184,6 +186,7 @@ class DailyReport(BaseModel):
     weather: Optional[dict] = None
     email_sent_to: List[str] = []
     created_at: str
+    signature: Optional[dict] = None
 
 
 # ---------- Auth helpers ----------
@@ -819,4 +822,206 @@ async def workday_export(report_id: str, request: Request, user: dict = Depends(
     )
 
 
+# ---------- Voice-to-Notes (Whisper) ----------
+@api.post("/transcribe")
+async def transcribe(audio: UploadFile = File(...), user: dict = Depends(current_user)):
+    ALLOWED_EXT = {"m4a", "mp3", "mp4", "mpeg", "mpga", "wav", "webm"}
+    fname = audio.filename or "recording.m4a"
+    ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else "m4a"
+    if ext not in ALLOWED_EXT:
+        raise HTTPException(415, f"Unsupported audio format: {ext}")
+    data = await audio.read()
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(413, "Audio must be <= 25 MB")
+    if len(data) == 0:
+        raise HTTPException(400, "Empty audio")
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
+        with open(tmp_path, "rb") as f:
+            response = await stt.transcribe(
+                file=f, model="whisper-1", response_format="json",
+                prompt="Painting field report: highlights, delays, change orders, materials, crew, weather.",
+            )
+        text = ""
+        if hasattr(response, "text"):
+            text = response.text
+        elif isinstance(response, dict):
+            text = response.get("text", "")
+        else:
+            text = str(response)
+        return {"text": (text or "").strip()}
+    except Exception as e:
+        logger.error(f"Transcription failed: {e}")
+        raise HTTPException(502, f"Transcription failed: {str(e)}")
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+
+# ---------- Customer Directory ----------
+class CustomerCreate(BaseModel):
+    name: str
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[EmailStr] = None
+    notes: Optional[str] = None
+    project_code: Optional[str] = None
+
+
+class Customer(CustomerCreate):
+    id: str
+    created_by: str
+    created_at: str
+
+
+@api.post("/customers", response_model=Customer, status_code=201)
+async def create_customer(data: CustomerCreate, request: Request, user: dict = Depends(current_user)):
+    doc = data.model_dump()
+    doc.update({
+        "id": str(uuid4()),
+        "created_by": user["id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await request.app.db.customers.insert_one(doc.copy())
+    doc.pop("_id", None)
+    return Customer(**doc)
+
+
+@api.get("/customers", response_model=List[Customer])
+async def list_customers(request: Request, user: dict = Depends(current_user)):
+    docs = await request.app.db.customers.find({}, {"_id": 0}).sort("name", 1).to_list(1000)
+    return [Customer(**d) for d in docs]
+
+
+@api.delete("/customers/{customer_id}")
+async def delete_customer(customer_id: str, request: Request, _: dict = Depends(admin_only)):
+    result = await request.app.db.customers.delete_one({"id": customer_id})
+    if result.deleted_count == 0:
+        raise HTTPException(404, "Customer not found")
+    return {"ok": True}
+
+
+# ---------- Weekly Digest ----------
+class DigestRequest(BaseModel):
+    recipient_emails: List[EmailStr]
+
+
+@api.post("/digest/weekly")
+async def weekly_digest(data: DigestRequest, request: Request, admin: dict = Depends(admin_only)):
+    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    reports = await request.app.db.reports.find(
+        {"created_at": {"$gte": week_ago}}, {"_id": 0}
+    ).sort("created_at", -1).to_list(500)
+    if not reports:
+        raise HTTPException(400, "No reports in the last 7 days")
+
+    lines = [f"Weekly Digest — {len(reports)} reports across the past 7 days.", ""]
+    total_visits = sum(len(r.get("visits", [])) for r in reports)
+    total_breaks = sum(len(r.get("breaks", [])) for r in reports)
+    total_sms = sum(len(r.get("sms_logs", [])) for r in reports)
+    change_order_notes = [r.get("change_orders") for r in reports if r.get("change_orders")]
+    delay_notes = [r.get("delays") for r in reports if r.get("delays")]
+
+    lines.append(f"Totals: {total_visits} visits, {total_breaks} breaks, {total_sms} communications")
+    lines.append(f"Change orders logged: {len(change_order_notes)}")
+    lines.append(f"Days with delays: {len(delay_notes)}")
+    lines.append("")
+    lines.append("Individual report summaries:")
+    for r in reports[:20]:
+        lines.append(f"[{r['report_date']}] {r['author_name']} ({r['author_role']}) — {r.get('project_name') or r.get('project_code') or 'Unspecified'}")
+        lines.append(r["ai_summary"][:600])
+        lines.append("")
+
+    prompt = (
+        "You are the operations manager writing a weekly executive digest to the owner. "
+        "Summarize the following daily reports from the last 7 days. Highlight: "
+        "1) top wins, 2) recurring delays/root causes, 3) change orders and their revenue impact if visible, "
+        "4) customer or subcontractor escalations, 5) weather impact patterns, 6) recommended next-week actions. "
+        "Write 400-600 words, professional and concise, with short headed sections."
+    )
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"digest-{uuid4()}",
+            system_message=prompt,
+        ).with_model("openai", "gpt-5.4")
+        digest_text = await chat.send_message(UserMessage(text="\n".join(lines)))
+        digest_text = digest_text if isinstance(digest_text, str) else str(digest_text)
+    except Exception as e:
+        logger.error(f"Digest AI failed: {e}")
+        digest_text = "\n".join(lines)
+
+    digest_id = str(uuid4())
+    digest_doc = {
+        "id": digest_id,
+        "created_by": admin["id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "report_ids": [r["id"] for r in reports],
+        "text": digest_text,
+        "totals": {"visits": total_visits, "breaks": total_breaks, "sms": total_sms,
+                   "change_orders": len(change_order_notes), "delays": len(delay_notes)},
+        "email_sent_to": [],
+    }
+    await request.app.db.digests.insert_one(digest_doc.copy())
+
+    summary_html = escape(digest_text).replace("\n", "<br>")
+    subject = f"Weekly Ops Digest — {datetime.now(timezone.utc).date().isoformat()}"
+    html = (
+        f'<table role="presentation" width="100%" style="font-family:Arial,sans-serif">'
+        f'<tr><td style="padding:24px">'
+        f'<h2 style="margin:0 0 12px 0;color:#111827">Weekly Operations Digest</h2>'
+        f'<p style="color:#374151;margin:0 0 16px 0">{len(reports)} reports · '
+        f'{total_visits} visits · {total_breaks} breaks · {total_sms} comms</p>'
+        f'<hr style="border:none;border-top:1px solid #E5E7EB;margin:16px 0">'
+        f'<div style="color:#111827;line-height:1.6">{summary_html}</div>'
+        f'<hr style="border:none;border-top:1px solid #E5E7EB;margin:16px 0">'
+        f'<p style="font-size:12px;color:#6B7280;margin:0">Sent by {escape(EMAIL_FROM_NAME)}. '
+        f'We never ask for your password or card details by email.</p>'
+        f'</td></tr></table>'
+    )
+
+    sent = []
+    for email in data.recipient_emails:
+        eid = await send_email(to=str(email), subject=subject, html=html)
+        if eid:
+            sent.append(str(email))
+    if sent:
+        await request.app.db.digests.update_one({"id": digest_id}, {"$set": {"email_sent_to": sent}})
+        digest_doc["email_sent_to"] = sent
+
+    digest_doc.pop("_id", None)
+    return digest_doc
+
+
+# ---------- Report Signature ----------
+class SignaturePayload(BaseModel):
+    customer_name: str
+    signature_base64: str
+
+
+@api.patch("/reports/{report_id}/signature")
+async def add_signature(report_id: str, data: SignaturePayload, request: Request, user: dict = Depends(current_user)):
+    doc = await request.app.db.reports.find_one({"id": report_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Report not found")
+    FULL_ROLES = {Role.OWNER.value, Role.OPERATIONS.value, Role.PROJECT_MANAGER.value}
+    if user["role"] not in FULL_ROLES and not user.get("is_admin") and doc["user_id"] != user["id"]:
+        raise HTTPException(403, "Not allowed")
+    signature = {
+        "customer_name": data.customer_name,
+        "signature_base64": data.signature_base64,
+        "signed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await request.app.db.reports.update_one({"id": report_id}, {"$set": {"signature": signature}})
+    return {"ok": True, "signature": signature}
+
+
+# Include the router (with the new routes) — must be after all routes are defined
 app.include_router(api)
