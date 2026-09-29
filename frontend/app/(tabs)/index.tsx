@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -20,6 +20,7 @@ import { api } from "@/src/api";
 import { useAuth } from "@/src/auth/AuthProvider";
 import { colors, spacing, radius } from "@/src/theme";
 import { flushQueue, pendingCount } from "@/src/offline";
+import { PaintOpsMap, PaintOpsMapHandle } from "@/src/components/PaintOpsMap";
 
 const WEATHER_HERO_IMG =
   "https://images.unsplash.com/photo-1505533542167-8c89838bb19e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMG1vcm5pbmclMjBsaWdodCUyMHNreSUyMHdlYXRoZXIlMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc5MDY1MTk5NHww&ixlib=rb-4.1.0&q=85";
@@ -35,6 +36,16 @@ export default function HomeScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [todayReports, setTodayReports] = useState<any[]>([]);
   const [pending, setPending] = useState(0);
+  const [selectedVisitId, setSelectedVisitId] = useState<string | null>(null);
+  const mapRef = useRef<PaintOpsMapHandle>(null);
+
+  const selectedVisit = visits.find((v) => v.id === selectedVisitId) || null;
+
+  const handleVisitPress = useCallback((v: any) => {
+    Haptics.selectionAsync().catch(() => {});
+    setSelectedVisitId(v.id);
+    mapRef.current?.focusVisit(v);
+  }, []);
 
   const loadEverything = useCallback(async () => {
     if (!user) return;
@@ -245,6 +256,70 @@ export default function HomeScreen() {
               {visits.length} visits · {breaks.length} breaks
             </Text>
           </View>
+
+          {/* Interactive map + Today's Activity linked */}
+          {visits.length > 0 ? (
+            <View style={styles.mapCard} testID="home-map-container">
+              <PaintOpsMap
+                ref={mapRef}
+                visits={visits}
+                selectedId={selectedVisitId}
+                onMarkerPress={(v) => setSelectedVisitId(v.id)}
+              />
+              <View style={styles.mapLegend}>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: colors.brandPrimary }]} />
+                  <Text style={styles.legendText}>Active</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: colors.success }]} />
+                  <Text style={styles.legendText}>Ended</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: colors.warning }]} />
+                  <Text style={styles.legendText}>Selected</Text>
+                </View>
+              </View>
+            </View>
+          ) : null}
+
+          {selectedVisit ? (
+            <View style={styles.pinDetail} testID="pin-detail-card">
+              <View style={styles.pinDetailHead}>
+                <View style={[styles.pinDetailIcon, selectedVisit.ended_at && { backgroundColor: colors.success }]}>
+                  <Ionicons name="location" size={16} color={colors.onBrandPrimary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.pinDetailTitle} numberOfLines={1}>
+                    {selectedVisit.customer_name || "Job Site"}
+                    {selectedVisit.project_code ? ` · ${selectedVisit.project_code}` : ""}
+                  </Text>
+                  <Text style={styles.pinDetailSub} numberOfLines={2}>
+                    {selectedVisit.address ||
+                      `${selectedVisit.latitude.toFixed(5)}, ${selectedVisit.longitude.toFixed(5)}`}
+                  </Text>
+                </View>
+                <Pressable
+                  testID="pin-detail-close"
+                  onPress={() => setSelectedVisitId(null)}
+                  hitSlop={8}
+                  style={styles.pinDetailClose}
+                >
+                  <Ionicons name="close" size={16} color={colors.onSurface} />
+                </Pressable>
+              </View>
+              {selectedVisit.notes ? (
+                <Text style={styles.pinDetailNotes}>{selectedVisit.notes}</Text>
+              ) : null}
+              <Text style={styles.pinDetailMeta}>
+                {new Date(selectedVisit.timestamp).toLocaleTimeString()}
+                {selectedVisit.ended_at
+                  ? ` → ${new Date(selectedVisit.ended_at).toLocaleTimeString()}`
+                  : " · active"}
+              </Text>
+            </View>
+          ) : null}
+
           {visits.length === 0 ? (
             <View style={styles.emptyCard}>
               <Ionicons name="map-outline" size={28} color={colors.muted} />
@@ -252,22 +327,48 @@ export default function HomeScreen() {
               <Text style={styles.emptySub}>Head to Map to check in at a job site.</Text>
             </View>
           ) : (
-            visits.map((v) => (
-              <View key={v.id} style={styles.visitCard} testID={`visit-card-${v.id}`}>
-                <View style={styles.visitIcon}>
-                  <Ionicons name="location" size={18} color={colors.brandPrimary} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.visitTitle}>
-                    {v.customer_name || "Job Site"} {v.project_code ? `· ${v.project_code}` : ""}
-                  </Text>
-                  <Text style={styles.visitSub}>
-                    {v.address || `${v.latitude.toFixed(4)}, ${v.longitude.toFixed(4)}`}
-                  </Text>
-                  {v.notes ? <Text style={styles.visitNotes}>{v.notes}</Text> : null}
-                </View>
-              </View>
-            ))
+            visits.map((v) => {
+              const isSelected = v.id === selectedVisitId;
+              return (
+                <Pressable
+                  key={v.id}
+                  testID={`visit-card-${v.id}`}
+                  onPress={() => handleVisitPress(v)}
+                  style={({ pressed }) => [
+                    styles.visitCard,
+                    pressed && { opacity: 0.85 },
+                    isSelected && styles.visitCardSelected,
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.visitIcon,
+                      isSelected && { backgroundColor: colors.warning },
+                    ]}
+                  >
+                    <Ionicons
+                      name="location"
+                      size={18}
+                      color={isSelected ? colors.onWarning : colors.brandPrimary}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.visitTitle}>
+                      {v.customer_name || "Job Site"} {v.project_code ? `· ${v.project_code}` : ""}
+                    </Text>
+                    <Text style={styles.visitSub}>
+                      {v.address || `${v.latitude.toFixed(4)}, ${v.longitude.toFixed(4)}`}
+                    </Text>
+                    {v.notes ? <Text style={styles.visitNotes}>{v.notes}</Text> : null}
+                  </View>
+                  <Ionicons
+                    name={isSelected ? "checkmark-circle" : "chevron-forward"}
+                    size={16}
+                    color={isSelected ? colors.warning : colors.muted}
+                  />
+                </Pressable>
+              );
+            })
           )}
         </View>
       </ScrollView>
@@ -436,6 +537,10 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     alignItems: "flex-start",
   },
+  visitCardSelected: {
+    borderColor: colors.warning,
+    backgroundColor: "#FEF3C7",
+  },
   visitIcon: {
     width: 36,
     height: 36,
@@ -447,4 +552,58 @@ const styles = StyleSheet.create({
   visitTitle: { fontWeight: "700", color: colors.onSurface, fontSize: 14 },
   visitSub: { color: colors.muted, fontSize: 12, marginTop: 2 },
   visitNotes: { color: colors.onSurfaceTertiary, fontSize: 12, marginTop: 4, fontStyle: "italic" },
+  mapCard: {
+    height: 220,
+    borderRadius: radius.md,
+    overflow: "hidden",
+    backgroundColor: colors.surfaceTertiary,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: spacing.md,
+  },
+  mapLegend: {
+    position: "absolute",
+    bottom: spacing.sm,
+    left: spacing.sm,
+    flexDirection: "row",
+    gap: spacing.sm,
+    backgroundColor: "rgba(255,255,255,0.9)",
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+  },
+  legendItem: { flexDirection: "row", alignItems: "center", gap: 4 },
+  legendDot: { width: 10, height: 10, borderRadius: 5 },
+  legendText: { color: colors.onSurface, fontSize: 10, fontWeight: "600" },
+  pinDetail: {
+    padding: spacing.md,
+    backgroundColor: "#FEF3C7",
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.warning,
+    marginBottom: spacing.md,
+  },
+  pinDetailHead: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  pinDetailIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: radius.md,
+    backgroundColor: colors.brandPrimary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pinDetailTitle: { fontWeight: "700", color: colors.onSurface, fontSize: 14 },
+  pinDetailSub: { color: colors.onSurfaceTertiary, fontSize: 12, marginTop: 2 },
+  pinDetailNotes: {
+    color: colors.onSurfaceTertiary,
+    fontSize: 12,
+    marginTop: spacing.sm,
+    fontStyle: "italic",
+  },
+  pinDetailMeta: { color: colors.muted, fontSize: 11, marginTop: spacing.xs },
+  pinDetailClose: {
+    padding: 4,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceSecondary,
+  },
 });
