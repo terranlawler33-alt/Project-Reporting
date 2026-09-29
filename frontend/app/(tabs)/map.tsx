@@ -489,7 +489,18 @@ export default function MapScreen() {
           </View>
         ) : (
           visits.map((v) => (
-            <View key={v.id} style={styles.visitCard} testID={`map-visit-${v.id}`}>
+            <Pressable
+              key={v.id}
+              testID={`map-visit-${v.id}`}
+              onPress={() => {
+                Haptics.selectionAsync().catch(() => {});
+                setSelectedVisit(v);
+              }}
+              style={({ pressed }) => [
+                styles.visitCard,
+                pressed && { opacity: 0.75 },
+              ]}
+            >
               <View style={[styles.pin, v.ended_at && { backgroundColor: colors.success }]}>
                 <Ionicons name="location" size={18} color={colors.onBrandPrimary} />
               </View>
@@ -519,7 +530,8 @@ export default function MapScreen() {
               {!v.ended_at && (
                 <Pressable
                   testID={`end-visit-${v.id}`}
-                  onPress={async () => {
+                  onPress={async (e) => {
+                    e.stopPropagation?.();
                     await api.endVisit(v.id);
                     await load();
                   }}
@@ -528,7 +540,13 @@ export default function MapScreen() {
                   <Text style={styles.endBtnText}>End</Text>
                 </Pressable>
               )}
-            </View>
+              <Ionicons
+                name="chevron-forward"
+                size={18}
+                color={colors.muted}
+                style={{ marginLeft: 4, alignSelf: "center" }}
+              />
+            </Pressable>
           ))
         )}
       </ScrollView>
