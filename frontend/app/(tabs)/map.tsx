@@ -637,6 +637,38 @@ export default function MapScreen() {
                     <Text style={styles.detailText}>{selectedVisit.notes}</Text>
                   </View>
                 ) : null}
+                {selectedVisit.weather ? (
+                  <View style={styles.weatherCard} testID="visit-weather-card">
+                    <View style={styles.weatherHeader}>
+                      <Ionicons name="partly-sunny" size={16} color={colors.brandPrimary} />
+                      <Text style={styles.weatherHeaderText}>
+                        {selectedVisit.weather.conditions} · {Math.round(selectedVisit.weather.temperature_f)}°F
+                      </Text>
+                      <Pressable
+                        testID="visit-weather-refresh"
+                        onPress={async () => {
+                          try {
+                            const updated = await api.refreshVisitWeather(selectedVisit.id);
+                            setSelectedVisit(updated);
+                            await load();
+                          } catch {}
+                        }}
+                        hitSlop={8}
+                      >
+                        <Ionicons name="refresh" size={14} color={colors.brandPrimary} />
+                      </Pressable>
+                    </View>
+                    <Text style={styles.weatherSub}>
+                      Wind {Math.round(selectedVisit.weather.wind_mph || 0)} mph · Precip{" "}
+                      {(selectedVisit.weather.precipitation || 0).toFixed(2)} in
+                    </Text>
+                    {selectedVisit.weather_refreshed_at ? (
+                      <Text style={styles.weatherStamp}>
+                        Updated {new Date(selectedVisit.weather_refreshed_at).toLocaleTimeString()}
+                      </Text>
+                    ) : null}
+                  </View>
+                ) : null}
                 {selectedVisit.photos?.length ? (
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: spacing.sm }}>
                     <View style={{ flexDirection: "row", gap: 6 }}>
@@ -976,6 +1008,18 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
     textAlign: "center",
   },
+  weatherCard: {
+    marginTop: spacing.md,
+    padding: spacing.md,
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  weatherHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
+  weatherHeaderText: { flex: 1, color: colors.onSurface, fontSize: 13, fontWeight: "700" },
+  weatherSub: { color: colors.muted, fontSize: 12, marginTop: 4 },
+  weatherStamp: { color: colors.muted, fontSize: 10, marginTop: 4, fontStyle: "italic" },
 });
 
 function VisitPhoto({ path, testID }: { path: string; testID: string }) {

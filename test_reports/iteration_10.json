@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 10 — Weather features backend tests. Wrote /app/backend/tests/test_iteration10_weather.py with 18 tests across 7 groups (VisitAutoWeather, RefreshWeather, Geocode, WeatherAuth, ReportAutoProjectsCarryWeather, ExplicitProjectsWeatherRoundtrip, Regression). Executed with pytest -n 0 (serial). Result: 18 passed / 0 failed / 0 skipped in ~30s. Note: default pytest.ini `-n 2 --dist loadscope` splits classes across xdist workers so a module-scoped `state` fixture is not shared across classes; ran serially to preserve login/state chain. All weather features verified end-to-end against live Open-Meteo: POST /visits auto-attaches weather snapshot with numeric temperature_f/wind_mph/precipitation, non-empty conditions, int weather_code, ISO weather_refreshed_at; refresh-weather returns updated LocationVisit with weather_refreshed_at >= create-time; 404 for unknown id; 403 when Production role refreshes admin's visit; /geocode returns 1..8 shaped results, 400 on empty q, 401 without auth, empty for gibberish; /weather requires auth and returns full snapshot for admin; auto-derived projects on POST /reports carry per-visit weather and WEATHER IMPACT block; explicit projects[].weather roundtrip preserves temperature_f=72. Regression (/parse-project, /reports/{id}/tts with openai voice_provider, /customers/history, GET /reports) all green.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration10_weather.py",
+    "/app/test_reports/pytest/pytest_iteration10.xml"
+  ],
+  "action_items": [
+    "Optional: Note that /app/backend/pytest.ini forces `-n 2 --dist loadscope` which does NOT share a module-scoped fixture across classes on different workers. Future test suites relying on class-crossing shared login state must either (a) run with `-n 0`, (b) put all dependent tests in the same class, or (c) re-authenticate per-class. Iteration 10 uses option (a)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:914-939 (`create_report` weather fetch): duplicates the Open-Meteo call logic from `_fetch_weather` (server.py:505). Consider reusing `_fetch_weather` to keep field names (conditions, humidity) consistent — currently the top-level report `weather` sets `conditions='Fetched from Open-Meteo'` whereas per-project weather uses the human-readable WEATHER_CODES mapping. Not a test blocker, but reduces duplication and unifies output shape.",
+    "server.py:552 `/geocode` swallows Open-Meteo errors into HTTP 502 without preserving the caller's `q` in the message — fine for now, but users get no hint if the upstream is degraded.",
+    "server.py:610-628 `refresh-weather` raises HTTP 502 if Open-Meteo fails; tests treat 502 as skip. Consider degrading like create_visit (keep old weather, still 200) so mobile clients don't error on transient Open-Meteo blips."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration10_weather.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (18/18)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "seed_data_creation": "Created admin-owned visits at Boston/NYC coordinates with customer_names AutoW, TEST_AutoW_A, TEST_AutoW_B; one seed report (auto-derived projects) and one explicit-projects report with id `p1`. All data prefixed with TEST_ where applicable per convention.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "When adding new test files with cross-class shared state (module-scoped `state` fixture with login in a TestPrep class), run pytest with `-n 0` to disable xdist parallelism. The repo's pytest.ini enforces `-n 2 --dist loadscope`, which schedules whole classes to different workers — module-scoped fixtures are per-process and thus NOT shared across classes. Alternatively, keep all dependent tests in a single class or re-authenticate per class.",
+  "rca_of_issue": "N/A — no bugs found. Initial run showed spurious 401 'Invalid authentication' failures for tests in classes other than TestPrep; RCA: pytest-xdist `loadscope` distributes classes across workers, and each worker process instantiates its own module-scoped `state` object, so `state.admin_token` was empty on workers that did not host TestPrep. Mitigation applied: run with `-n 0` (serial) so the whole module shares one process. Full 18/18 pass on serial run."
+}

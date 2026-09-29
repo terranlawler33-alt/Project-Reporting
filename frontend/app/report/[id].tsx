@@ -267,6 +267,28 @@ export default function ReportDetail() {
           </MetaCard>
         )}
 
+        {report.projects?.length && report.projects.some((p: any) => p.weather) ? (
+          <MetaCard title="Weather by site" testID="report-per-site-weather">
+            {report.projects.map((p: any, idx: number) => (
+              p.weather ? (
+                <View key={p.id || idx} style={styles.mini} testID={`report-site-weather-${idx}`}>
+                  <Text style={styles.miniTitle} numberOfLines={1}>
+                    {p.customer_name || p.address || `Project ${idx + 1}`}
+                  </Text>
+                  {p.address ? (
+                    <Text style={styles.miniSub} numberOfLines={1}>{p.address}</Text>
+                  ) : null}
+                  <Text style={styles.miniNotes}>
+                    {p.weather.conditions} · {Math.round(p.weather.temperature_f)}°F · wind{" "}
+                    {Math.round(p.weather.wind_mph || 0)} mph · precip{" "}
+                    {(p.weather.precipitation || 0).toFixed(2)}"
+                  </Text>
+                </View>
+              ) : null
+            ))}
+          </MetaCard>
+        ) : null}
+
         {report.visits?.length ? (
           <MetaCard title={`Visits (${report.visits.length})`} testID="report-visits">
             {report.visits.map((v: any) => (

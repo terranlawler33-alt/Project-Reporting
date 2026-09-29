@@ -122,6 +122,8 @@ class LocationVisit(LocationVisitCreate):
     timestamp: str
     ended_at: Optional[str] = None
     photos: List[str] = []
+    weather: Optional[dict] = None  # snapshot fetched at check-in time
+    weather_refreshed_at: Optional[str] = None
 
 
 class BreakCreate(BaseModel):
@@ -181,6 +183,7 @@ class ProjectEntry(BaseModel):
     touch_up: bool = False
     photos: List[str] = []
     visit_ids: List[str] = []
+    weather: Optional[dict] = None  # site-specific weather snapshot at check-in
 
 
 class ReportCreate(BaseModel):
@@ -489,10 +492,22 @@ async def delete_user(user_id: str, request: Request, admin: dict = Depends(admi
 
 
 # ---------- Weather (Open-Meteo) ----------
-@api.get("/weather")
-async def get_weather(lat: float, lon: float):
+WEATHER_CODES = {
+    0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Fog", 48: "Depositing rime fog", 51: "Light drizzle", 53: "Moderate drizzle",
+    55: "Dense drizzle", 61: "Slight rain", 63: "Moderate rain", 65: "Heavy rain",
+    71: "Slight snow", 73: "Moderate snow", 75: "Heavy snow", 80: "Rain showers",
+    81: "Moderate rain showers", 82: "Violent rain showers", 95: "Thunderstorm",
+    96: "Thunderstorm w/ slight hail", 99: "Thunderstorm w/ heavy hail",
+}
+
+
+async def _fetch_weather(lat: float, lon: float) -> Optional[dict]:
+    """Fetch a weather snapshot from Open-Meteo. Returns None on failure so
+    callers can degrade gracefully.
+    """
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
                 "https://api.open-meteo.com/v1/forecast",
                 params={
@@ -506,17 +521,8 @@ async def get_weather(lat: float, lon: float):
                 },
             )
         resp.raise_for_status()
-        data = resp.json()
-        current = data.get("current", {})
+        current = resp.json().get("current", {})
         code = current.get("weather_code", 0)
-        conditions_map = {
-            0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
-            45: "Fog", 48: "Depositing rime fog", 51: "Light drizzle", 53: "Moderate drizzle",
-            55: "Dense drizzle", 61: "Slight rain", 63: "Moderate rain", 65: "Heavy rain",
-            71: "Slight snow", 73: "Moderate snow", 75: "Heavy snow", 80: "Rain showers",
-            81: "Moderate rain showers", 82: "Violent rain showers", 95: "Thunderstorm",
-            96: "Thunderstorm w/ slight hail", 99: "Thunderstorm w/ heavy hail",
-        }
         return {
             "latitude": lat,
             "longitude": lon,
@@ -525,26 +531,100 @@ async def get_weather(lat: float, lon: float):
             "wind_mph": current.get("wind_speed_10m"),
             "precipitation": current.get("precipitation"),
             "weather_code": code,
-            "conditions": conditions_map.get(code, "Unknown"),
+            "conditions": WEATHER_CODES.get(code, "Unknown"),
             "fetched_at": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as e:
-        logger.error(f"Weather fetch failed: {e}")
+        logger.warning(f"Weather fetch failed for {lat},{lon}: {e}")
+        return None
+
+
+@api.get("/weather")
+async def get_weather(lat: float, lon: float, _: dict = Depends(current_user)):
+    snapshot = await _fetch_weather(lat, lon)
+    if not snapshot:
         raise HTTPException(502, "Failed to fetch weather")
+    return snapshot
+
+
+@api.get("/geocode")
+async def geocode(q: str, _: dict = Depends(current_user)):
+    """Search a place/address using Open-Meteo Geocoding API (free, no key)."""
+    q = (q or "").strip()
+    if not q:
+        raise HTTPException(400, "Query cannot be empty")
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": q, "count": 8, "language": "en", "format": "json"},
+            )
+        resp.raise_for_status()
+        results = (resp.json() or {}).get("results", []) or []
+    except Exception as e:
+        logger.warning(f"Geocode failed for {q!r}: {e}")
+        raise HTTPException(502, "Geocoding lookup failed")
+    return {
+        "query": q,
+        "results": [
+            {
+                "id": r.get("id"),
+                "name": r.get("name"),
+                "admin1": r.get("admin1"),  # state/province
+                "admin2": r.get("admin2"),  # county
+                "country": r.get("country"),
+                "country_code": r.get("country_code"),
+                "latitude": r.get("latitude"),
+                "longitude": r.get("longitude"),
+                "postcodes": r.get("postcodes") or [],
+                "label": ", ".join(
+                    [x for x in [r.get("name"), r.get("admin1"), r.get("country")] if x]
+                ),
+            }
+            for r in results
+        ],
+    }
 
 
 # ---------- Location Visits ----------
 @api.post("/visits", response_model=LocationVisit)
 async def create_visit(data: LocationVisitCreate, request: Request, user: dict = Depends(current_user)):
     doc = data.model_dump()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    # Auto-fetch weather snapshot at the pin coordinates so the report can show
+    # the exact conditions when work started at this site.
+    weather_snapshot = await _fetch_weather(doc["latitude"], doc["longitude"])
     doc.update({
         "id": str(uuid4()),
         "user_id": user["id"],
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": now_iso,
         "ended_at": None,
+        "weather": weather_snapshot,
+        "weather_refreshed_at": now_iso if weather_snapshot else None,
     })
     await request.app.db.visits.insert_one(doc.copy())
     doc.pop("_id", None)
+    return LocationVisit(**doc)
+
+
+@api.post("/visits/{visit_id}/refresh-weather", response_model=LocationVisit)
+async def refresh_visit_weather(visit_id: str, request: Request, user: dict = Depends(current_user)):
+    doc = await request.app.db.visits.find_one({"id": visit_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Visit not found")
+    FULL_ROLES = {Role.OWNER.value, Role.OPERATIONS.value, Role.PROJECT_MANAGER.value}
+    if doc["user_id"] != user["id"] and user["role"] not in FULL_ROLES and not user.get("is_admin"):
+        raise HTTPException(403, "Not allowed")
+    snapshot = await _fetch_weather(doc["latitude"], doc["longitude"])
+    if not snapshot:
+        raise HTTPException(502, "Weather refresh failed")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await request.app.db.visits.update_one(
+        {"id": visit_id},
+        {"$set": {"weather": snapshot, "weather_refreshed_at": now_iso}},
+    )
+    doc["weather"] = snapshot
+    doc["weather_refreshed_at"] = now_iso
     return LocationVisit(**doc)
 
 
@@ -655,6 +735,9 @@ async def build_ai_summary(context: dict) -> str:
         "  GROUP the WORK COMPLETED section by project. For each project write a sub-line "
         "  '- **Project N — <customer or code> — <address>**' followed by 1-3 indented bullet points of the "
         "  actual work for that project (prefix indented bullets with '  - ').\n"
+        "- In WEATHER IMPACT: if per-project weather snapshots were provided, list one bullet per "
+        "  site prefixed with '- **<address>**: <conditions>, <temp>°F, wind <mph> mph'. Otherwise "
+        "  fall back to the overall day weather.\n"
         "- Wrap CUSTOMER names, ADDRESSES, and PROJECT CODES in double-asterisk bold, e.g. **John Doe**, **123 Main St**, **P-1042**.\n"
         "- If a priority flag reason was provided, echo it verbatim in DELAY / CONSTRAINTS on its own bullet "
         "prefixed with '[URGENT: <flag type>]' so it can be highlighted red in the app.\n"
@@ -699,6 +782,13 @@ async def build_ai_summary(context: dict) -> str:
                 prompt_lines.append(f"  · Work notes: {p['notes']}")
             if p.get("materials_used"):
                 prompt_lines.append(f"  · Materials used: {p['materials_used']}")
+            if p.get("weather"):
+                w = p["weather"]
+                prompt_lines.append(
+                    f"  · Weather on site: {w.get('conditions')}, "
+                    f"{w.get('temperature_f')}°F, wind {w.get('wind_mph')} mph, "
+                    f"precip {w.get('precipitation')} in."
+                )
             if p.get("priority_flag") or p.get("touch_up"):
                 flag = p.get("priority_flag") or ("Touch-Ups" if p.get("touch_up") else "")
                 if flag:
@@ -783,6 +873,7 @@ def _derive_projects_from_visits(visits: List[dict]) -> List[dict]:
             "touch_up": False,
             "photos": list(v.get("photos", [])),
             "visit_ids": [v.get("id")] if v.get("id") else [],
+            "weather": v.get("weather"),
         }
         if pid and pid in by_pid:
             # merge additional visit into the same project
@@ -791,6 +882,9 @@ def _derive_projects_from_visits(visits: List[dict]) -> List[dict]:
             existing["photos"].extend(v.get("photos", []))
             if v.get("notes"):
                 existing["notes"] = (existing.get("notes") or "") + ("\n" if existing.get("notes") else "") + v["notes"]
+            # keep the earliest weather snapshot so the report reflects check-in conditions
+            if not existing.get("weather") and v.get("weather"):
+                existing["weather"] = v["weather"]
         elif pid:
             by_pid[pid] = base
             projects.append(base)

@@ -6,31 +6,23 @@ import {
   StyleSheet,
   Pressable,
   RefreshControl,
-  ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import * as Location from "expo-location";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import * as Haptics from "expo-haptics";
 import * as Network from "expo-network";
 import { useRouter, useFocusEffect } from "expo-router";
-import { LinearGradient } from "expo-linear-gradient";
-import { Image } from "expo-image";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/auth/AuthProvider";
 import { colors, spacing, radius } from "@/src/theme";
 import { flushQueue, pendingCount } from "@/src/offline";
 import { PaintOpsMap, PaintOpsMapHandle } from "@/src/components/PaintOpsMap";
-
-const WEATHER_HERO_IMG =
-  "https://images.unsplash.com/photo-1505533542167-8c89838bb19e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMG1vcm5pbmclMjBsaWdodCUyMHNreSUyMHdlYXRoZXIlMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc5MDY1MTk5NHww&ixlib=rb-4.1.0&q=85";
+import { MultiLocationWeather } from "@/src/components/MultiLocationWeather";
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user } = useAuth();
-  const [weather, setWeather] = useState<any>(null);
-  const [loadingWeather, setLoadingWeather] = useState(false);
   const [visits, setVisits] = useState<any[]>([]);
   const [breaks, setBreaks] = useState<any[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -58,39 +50,16 @@ export default function HomeScreen() {
       setPending(await pendingCount());
     } catch {}
     try {
-      let coords: { latitude: number; longitude: number } | null = null;
-      try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status === "granted") {
-          setLoadingWeather(true);
-          const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-          coords = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
-        } else {
-          coords = { latitude: 40.7128, longitude: -74.006 };
-        }
-      } catch {
-        coords = { latitude: 40.7128, longitude: -74.006 };
-      }
-      if (coords) {
-        try {
-          const w = await api.weather(coords.latitude, coords.longitude);
-          setWeather(w);
-        } catch {}
-      }
-      try {
-        const [v, b, allReports] = await Promise.all([
-          api.visitsToday(),
-          api.breaksToday(),
-          api.listReports().catch(() => []),
-        ]);
-        setVisits(v);
-        setBreaks(b);
-        const today = new Date().toISOString().slice(0, 10);
-        setTodayReports((allReports as any[]).filter((r) => r.report_date === today && !r.archived));
-      } catch {}
-    } finally {
-      setLoadingWeather(false);
-    }
+      const [v, b, allReports] = await Promise.all([
+        api.visitsToday(),
+        api.breaksToday(),
+        api.listReports().catch(() => []),
+      ]);
+      setVisits(v);
+      setBreaks(b);
+      const today = new Date().toISOString().slice(0, 10);
+      setTodayReports((allReports as any[]).filter((r) => r.report_date === today && !r.archived));
+    } catch {}
   }, [user]);
 
   useEffect(() => {
@@ -130,41 +99,11 @@ export default function HomeScreen() {
           setRefreshing(false);
         }} tintColor={colors.brandPrimary} />}
       >
-        {/* Weather Hero */}
-        <View style={[styles.hero, { paddingTop: insets.top + spacing.lg }]}>
-          <Image source={{ uri: WEATHER_HERO_IMG }} style={StyleSheet.absoluteFill} contentFit="cover" />
-          <LinearGradient
-            colors={["rgba(17,24,39,0.15)", "rgba(17,24,39,0.75)"]}
-            style={StyleSheet.absoluteFill}
-          />
-          <View style={styles.heroInner}>
-            <Text style={styles.heroGreeting}>Good day,</Text>
-            <Text style={styles.heroName} testID="home-user-name">
-              {user?.name || "Team"}
-            </Text>
-            <View style={styles.weatherRow}>
-              {loadingWeather ? (
-                <ActivityIndicator color="#fff" />
-              ) : weather ? (
-                <>
-                  <Ionicons name="partly-sunny" size={28} color="#fff" />
-                  <Text style={styles.weatherTemp} testID="home-weather-temp">
-                    {Math.round(weather.temperature_f)}°F
-                  </Text>
-                  <View style={styles.weatherMeta}>
-                    <Text style={styles.weatherCond}>{weather.conditions}</Text>
-                    <Text style={styles.weatherSub}>
-                      Wind {Math.round(weather.wind_mph || 0)} mph · Precip{" "}
-                      {(weather.precipitation || 0).toFixed(2)} in
-                    </Text>
-                  </View>
-                </>
-              ) : (
-                <Text style={styles.weatherCond}>Weather unavailable</Text>
-              )}
-            </View>
-          </View>
-        </View>
+        {/* Multi-location Weather Widget */}
+        <MultiLocationWeather
+          greetingName={user?.name || "Team"}
+          topPadding={insets.top}
+        />
 
         {/* Quick Actions */}
         <View style={styles.actionsRow}>

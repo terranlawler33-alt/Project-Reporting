@@ -140,25 +140,40 @@ backend:
     priority: "high"
     needs_retesting: false
     status_history:
+        - working: true
+          agent: "testing"
+          comment: "Iteration 9 — 16/16 pytest tests PASS."
+
+  - task: "Weather — geocoding, per-visit auto-fetch, refresh endpoint, projects carry weather to reports"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
         - working: "NA"
           agent: "main"
           comment: "See earlier entry."
         - working: true
           agent: "testing"
           comment: |
-            Iteration 9 — 16/16 pytest tests PASS. Verified structured parse
-            (customer/address/materials/times/touch_up/priority_flag all extracted),
-            400 on empty/whitespace text, 200 with fallback on gibberish, 7200-char
-            input handled (server truncates to 4000), auth required (403 with
-            HTTPBearer), schema consistency (exactly 10 keys, touch_up bool, others
-            null or non-empty string). Regression across reports/tts/customers/history/
-            transcribe all healthy. Report: /app/test_reports/iteration_9.json.
+            Iteration 10 — 18/18 pytest tests PASS.
+            All weather features verified end-to-end against live Open-Meteo:
+            - POST /visits auto-attaches weather snapshot with numeric fields.
+            - POST /visits/{id}/refresh-weather: 200 fresh, 404 unknown, 403 non-author.
+            - GET /geocode: 200 with 1..8 results, 400 empty q, 401 no auth.
+            - GET /weather auth-gated correctly.
+            - Reports auto-derive projects with per-visit weather; ai_summary has
+              WEATHER IMPACT block. Explicit weather in projects roundtrips.
+            - Regression: parse-project/tts/customer-history/reports all green.
+            Report: /app/test_reports/iteration_10.json.
 
 frontend:
-  - task: "Customer Search bar on Map screen"
+  - task: "Home — Multi-Location Weather widget + Report per-site weather + Refresh from pin sheet"
     implemented: true
     working: "NA"
-    file: "/app/frontend/app/(tabs)/map.tsx"
+    file: "/app/frontend/src/components/MultiLocationWeather.tsx, /app/frontend/app/(tabs)/index.tsx, /app/frontend/app/(tabs)/map.tsx, /app/frontend/app/report/[id].tsx"
     stuck_count: 0
     priority: "high"
     needs_retesting: true
@@ -166,38 +181,28 @@ frontend:
         - working: "NA"
           agent: "main"
           comment: |
-            NEW. Search input added between the Map header and the map. Suggestions
-            merge (a) customer directory entries (person icon) and (b) unique customer
-            names from today's visits (location icon), max 8, case-insensitive
-            substring match. Tap or press Enter → navigates to /customer/<name>.
-
-  - task: "Voice-to-Project mic on each project card"
-    implemented: true
-    working: "NA"
-    file: "/app/frontend/src/components/ProjectsSection.tsx"
-    stuck_count: 0
-    priority: "high"
-    needs_retesting: true
-    status_history:
-        - working: "NA"
-          agent: "main"
-          comment: |
-            NEW. Each project card in Compose Report has a mic button in the header.
-            Tap → records via expo-audio → transcribes via /api/transcribe (Whisper)
-            → parses with /api/parse-project → merges parsed fields into the card
-            (only overwrites EMPTY fields, appends notes rather than clobbering).
-            Only one card can be dictating at a time; other mics disable while
-            recording or parsing to avoid concurrent state.
+            NEW. `<MultiLocationWeather>` replaces the old fixed weather hero. Features:
+            - Always shows "Current location" (GPS) as the first card.
+            - + button opens a search modal that hits GET /api/geocode; tap a result
+              to save that location. Persisted per-device via AsyncStorage
+              (paintops.weather.locations.v1).
+            - ‹ › arrows and pagination dots to swipe between locations.
+            - Each card fetches its own snapshot from GET /api/weather.
+            - Remove (×) button on saved cards.
+            Report detail: new "Weather by site" MetaCard renders one row per project
+            that has a weather snapshot.
+            Map pin-tap sheet: shows the visit's captured weather + a refresh button
+            that hits POST /visits/{id}/refresh-weather and updates the sheet.
 
 metadata:
   created_by: "main_agent"
-  version: "1.3"
-  test_sequence: 9
+  version: "1.4"
+  test_sequence: 10
   run_ui: false
 
 test_plan:
   current_focus:
-    - "Voice-to-Project parse endpoint /api/parse-project"
+    - "Weather — geocoding, per-visit auto-fetch, refresh endpoint, projects carry weather to reports"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -205,17 +210,24 @@ test_plan:
 agent_communication:
     - agent: "main"
       message: |
-        Iteration 9 — Backend test focus: new endpoint POST /api/parse-project.
-        1. Send text that clearly describes a project (customer, address, materials,
-           touch-ups). Expect 200 with a JSON body containing customer_name, address,
-           materials_used, notes, touch_up=true, priority_flag="Touch-Ups".
-        2. Send empty text → expect 400.
-        3. Send very long text (>4000 chars) → still 200, LLM sees truncated input.
-        4. Send gibberish → 200 with mostly null fields, notes populated with the
-           truncated input as fallback.
-        5. Auth: unauthenticated → 401.
-        6. Regression: TTS, list reports, parse projects list still healthy.
-        Do NOT test frontend UI. Backend only.
+        Iteration 10 — Backend test focus:
+        1. POST /api/visits at valid coords → 200; response body has non-null
+           `weather` snapshot with temperature_f/wind_mph/precipitation/conditions and
+           `weather_refreshed_at` timestamp.
+        2. POST /api/visits/{visit_id}/refresh-weather on an existing visit → 200
+           with an updated weather snapshot and refreshed timestamp. 404 for unknown
+           id. 403 for a non-author, non-full-role user.
+        3. GET /api/geocode?q=Boston → 200 with `results` array (length up to 8),
+           each entry has label/latitude/longitude. Empty query → 400. Auth required
+           (401/403).
+        4. GET /api/weather now requires auth — hit without token → 401/403.
+        5. POST /api/reports with visits that have `weather` snapshots — backend
+           derived projects should carry `weather` through, and ai_summary should
+           mention weather at least once. Also submitting explicit `projects` with
+           `weather` inline should round-trip.
+        6. Regression: parse-project, TTS, customer history unchanged.
+        Do NOT test frontend UI.
         Credentials: admin@paintops.com / Admin@12345.
+
 
 

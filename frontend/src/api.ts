@@ -139,4 +139,22 @@ export const api = {
       touch_up: boolean;
       priority_flag: string | null;
     }>("/parse-project", { method: "POST", body: JSON.stringify({ text }) }),
+  geocode: (q: string) =>
+    apiRequest<{
+      query: string;
+      results: {
+        id: number;
+        name: string;
+        admin1?: string;
+        admin2?: string;
+        country?: string;
+        country_code?: string;
+        latitude: number;
+        longitude: number;
+        postcodes?: string[];
+        label: string;
+      }[];
+    }>(`/geocode?q=${encodeURIComponent(q)}`),
+  refreshVisitWeather: (visit_id: string) =>
+    apiRequest<any>(`/visits/${visit_id}/refresh-weather`, { method: "POST" }),
 };
