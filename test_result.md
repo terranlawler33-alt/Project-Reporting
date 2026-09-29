@@ -128,26 +128,37 @@ backend:
     priority: "high"
     needs_retesting: false
     status_history:
+        - working: true
+          agent: "testing"
+          comment: "Iteration 8 — 15/15 pytest tests PASS."
+
+  - task: "Voice-to-Project parse endpoint /api/parse-project"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
         - working: "NA"
           agent: "main"
           comment: "See earlier entry."
         - working: true
           agent: "testing"
           comment: |
-            Iteration 8 — 15/15 pytest tests PASS. Verified: visits accept project_id;
-            reports accept projects with all fields (round-trip + AI summary refs);
-            backward-compat auto-derives projects from legacy visits on GET; customer
-            history endpoint returns visits/reports/customer/photos/counts, case-insensitive
-            match, 400 on empty name, 401 unauth. Touch-Ups flag persists + AI summary
-            contains "TOUCH-UP" marker. Regression: TTS (200 via openai fallback),
-            regenerate-summary, /customers all unchanged. No blockers. Report:
-            /app/test_reports/iteration_8.json.
+            Iteration 9 — 16/16 pytest tests PASS. Verified structured parse
+            (customer/address/materials/times/touch_up/priority_flag all extracted),
+            400 on empty/whitespace text, 200 with fallback on gibberish, 7200-char
+            input handled (server truncates to 4000), auth required (403 with
+            HTTPBearer), schema consistency (exactly 10 keys, touch_up bool, others
+            null or non-empty string). Regression across reports/tts/customers/history/
+            transcribe all healthy. Report: /app/test_reports/iteration_9.json.
 
 frontend:
-  - task: "Compose Report — Projects section with Add Another Project"
+  - task: "Customer Search bar on Map screen"
     implemented: true
     working: "NA"
-    file: "/app/frontend/app/report/new.tsx, /app/frontend/src/components/ProjectsSection.tsx"
+    file: "/app/frontend/app/(tabs)/map.tsx"
     stuck_count: 0
     priority: "high"
     needs_retesting: true
@@ -155,19 +166,15 @@ frontend:
         - working: "NA"
           agent: "main"
           comment: |
-            NEW. `<ProjectsSection>` component inserted immediately after Material Notes
-            input in the Compose Report screen. Auto-populates from today's visits on
-            mount (grouped by project_id). Each project card has: customer name,
-            address (matches pin drop location), project code+name, start/end time,
-            work notes, materials used, Touch-Ups toggle, and a horizontal
-            flag-picker chip strip. "+ Add another Project" button at the bottom
-            appends an empty card. Payload sent as `projects: []` in POST /reports.
-            Also added "Touch-Ups" to PRIORITY_FLAGS in priority.ts.
+            NEW. Search input added between the Map header and the map. Suggestions
+            merge (a) customer directory entries (person icon) and (b) unique customer
+            names from today's visits (location icon), max 8, case-insensitive
+            substring match. Tap or press Enter → navigates to /customer/<name>.
 
-  - task: "Map — Attach-to-Project modal on pin drop + Pin-tap detail sheet + Customer history navigation"
+  - task: "Voice-to-Project mic on each project card"
     implemented: true
     working: "NA"
-    file: "/app/frontend/app/(tabs)/map.tsx, /app/frontend/app/customer/[name].tsx"
+    file: "/app/frontend/src/components/ProjectsSection.tsx"
     stuck_count: 0
     priority: "high"
     needs_retesting: true
@@ -175,30 +182,22 @@ frontend:
         - working: "NA"
           agent: "main"
           comment: |
-            NEW. Two new modals on Map screen:
-            1. Save Visit → if today already has 1+ projects, shows a bottom-sheet modal
-               asking which project to attach this pin to (list existing + "Start a new
-               project" button). If no projects yet today, the visit is saved as a new
-               project directly. The chosen `project_id` is passed to POST /visits.
-               When attaching to an existing project, the visit inherits customer /
-               address / project_code from that project (unless the form has values).
-            2. Pin tap on the map opens a detail sheet showing address, project code,
-               time in/out, notes, photos, plus a "See customer history →" button
-               that navigates to `/customer/<name>`.
-            NEW screen `/app/frontend/app/customer/[name].tsx` — fetches
-            `GET /api/customers/history?name=` and shows stats (visits/reports/photos),
-            directory contact info, list of visits, tappable list of reports mentioning
-            this customer, and photo grid.
+            NEW. Each project card in Compose Report has a mic button in the header.
+            Tap → records via expo-audio → transcribes via /api/transcribe (Whisper)
+            → parses with /api/parse-project → merges parsed fields into the card
+            (only overwrites EMPTY fields, appends notes rather than clobbering).
+            Only one card can be dictating at a time; other mics disable while
+            recording or parsing to avoid concurrent state.
 
 metadata:
   created_by: "main_agent"
-  version: "1.2"
-  test_sequence: 8
+  version: "1.3"
+  test_sequence: 9
   run_ui: false
 
 test_plan:
   current_focus:
-    - "Multi-Project reports + backward compat + Touch-Ups flag + customer history"
+    - "Voice-to-Project parse endpoint /api/parse-project"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -206,21 +205,17 @@ test_plan:
 agent_communication:
     - agent: "main"
       message: |
-        NEW FEATURE (iteration 8): Multi-project reports + Touch-Ups flag + customer history.
-        Backend test focus:
-        1. POST /api/visits accepts optional `project_id` and stores it.
-        2. POST /api/reports accepts `projects: List[ProjectEntry]` — verify one saved
-           and returned back, and that AI summary references projects (bullet under
-           WORK COMPLETED should include "Project 1" or the customer/address).
-        3. GET /api/reports (and single GET) — legacy reports (no projects field) get
-           auto-derived projects from visits; new reports keep their explicit projects.
-        4. GET /api/customers/history?name=<name> — returns visits, reports, photos,
-           customer record. Case-insensitive match. 400 if name empty.
-        5. Touch-Ups flag: send a report with priority_flags=[{type:"Touch-Ups"}] and
-           a project with touch_up=true — AI summary should mention [TOUCH-UP: address]
-           (best-effort — LLM may vary; check the presence of "TOUCH-UP" token OR the
-           bullet under DELAY / CONSTRAINTS).
-        6. Regression: TTS endpoint, GET /reports basic list, existing visit creation.
-        Do NOT test frontend UI in this iteration (backend only for now).
+        Iteration 9 — Backend test focus: new endpoint POST /api/parse-project.
+        1. Send text that clearly describes a project (customer, address, materials,
+           touch-ups). Expect 200 with a JSON body containing customer_name, address,
+           materials_used, notes, touch_up=true, priority_flag="Touch-Ups".
+        2. Send empty text → expect 400.
+        3. Send very long text (>4000 chars) → still 200, LLM sees truncated input.
+        4. Send gibberish → 200 with mostly null fields, notes populated with the
+           truncated input as fallback.
+        5. Auth: unauthenticated → 401.
+        6. Regression: TTS, list reports, parse projects list still healthy.
+        Do NOT test frontend UI. Backend only.
         Credentials: admin@paintops.com / Admin@12345.
+
 

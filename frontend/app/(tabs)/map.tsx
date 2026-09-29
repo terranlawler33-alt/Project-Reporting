@@ -38,6 +38,7 @@ export default function MapScreen() {
   const [pendingPhotos, setPendingPhotos] = useState<string[]>([]);
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [selectedVisit, setSelectedVisit] = useState<any | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
   const [form, setForm] = useState({
     latitude: "",
     longitude: "",
@@ -66,6 +67,36 @@ export default function MapScreen() {
       }
     }
     return Array.from(byPid.values());
+  })();
+
+  // Search suggestions: merge customer directory + unique customer names from visits
+  const searchSuggestions = (() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [] as { name: string; sub?: string; source: string }[];
+    const seen = new Set<string>();
+    const out: { name: string; sub?: string; source: string }[] = [];
+    for (const c of customers) {
+      const nm: string = c?.name || "";
+      if (!nm) continue;
+      if (nm.toLowerCase().includes(q) && !seen.has(nm.toLowerCase())) {
+        seen.add(nm.toLowerCase());
+        out.push({ name: nm, sub: c.address || c.phone || "Directory", source: "directory" });
+      }
+    }
+    for (const v of visits) {
+      const nm: string = v?.customer_name || "";
+      if (!nm) continue;
+      const key = nm.toLowerCase();
+      if (key.includes(q) && !seen.has(key)) {
+        seen.add(key);
+        out.push({
+          name: nm,
+          sub: v.address || `${v.latitude?.toFixed?.(4)}, ${v.longitude?.toFixed?.(4)}`,
+          source: "visit",
+        });
+      }
+    }
+    return out.slice(0, 8);
   })();
 
   const load = useCallback(async () => {
@@ -223,6 +254,65 @@ export default function MapScreen() {
         >
           <Ionicons name={showForm ? "close" : "add"} size={22} color={colors.onBrandPrimary} />
         </Pressable>
+      </View>
+
+      <View style={styles.searchBox}>
+        <View style={styles.searchInputWrap}>
+          <Ionicons name="search" size={16} color={colors.muted} />
+          <TextInput
+            testID="customer-search-input"
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Search customer to open their file…"
+            placeholderTextColor={colors.muted}
+            style={styles.searchInput}
+            autoCorrect={false}
+            autoCapitalize="none"
+            returnKeyType="search"
+            onSubmitEditing={() => {
+              if (searchSuggestions.length > 0) {
+                const top = searchSuggestions[0];
+                setSearchQuery("");
+                router.push(`/customer/${encodeURIComponent(top.name)}`);
+              }
+            }}
+          />
+          {searchQuery.length > 0 ? (
+            <Pressable onPress={() => setSearchQuery("")} testID="customer-search-clear" hitSlop={8}>
+              <Ionicons name="close-circle" size={16} color={colors.muted} />
+            </Pressable>
+          ) : null}
+        </View>
+        {searchSuggestions.length > 0 ? (
+          <View style={styles.searchDropdown} testID="customer-search-dropdown">
+            {searchSuggestions.map((s, idx) => (
+              <Pressable
+                key={`${s.name}-${idx}`}
+                testID={`customer-search-suggest-${idx}`}
+                onPress={() => {
+                  setSearchQuery("");
+                  router.push(`/customer/${encodeURIComponent(s.name)}`);
+                }}
+                style={styles.searchItem}
+              >
+                <Ionicons
+                  name={s.source === "directory" ? "person" : "location"}
+                  size={14}
+                  color={colors.brandPrimary}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.searchName} numberOfLines={1}>{s.name}</Text>
+                  {s.sub ? <Text style={styles.searchSub} numberOfLines={1}>{s.sub}</Text> : null}
+                </View>
+                <Ionicons name="chevron-forward" size={14} color={colors.muted} />
+              </Pressable>
+            ))}
+          </View>
+        ) : searchQuery.trim().length > 0 ? (
+          <View style={styles.searchDropdown}>
+            <Text style={styles.searchEmpty}>No matching customers</Text>
+          </View>
+        ) : null}
       </View>
 
       <View style={styles.mapWrap} testID="live-map-container">
@@ -630,6 +720,58 @@ const styles = StyleSheet.create({
   legendItem: { flexDirection: "row", alignItems: "center", gap: 4 },
   legendDot: { width: 10, height: 10, borderRadius: 5 },
   legendText: { color: colors.onSurface, fontSize: 10, fontWeight: "600" },
+  searchBox: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    zIndex: 20,
+  },
+  searchInputWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+  },
+  searchInput: {
+    flex: 1,
+    color: colors.onSurface,
+    fontSize: 13,
+    padding: 0,
+  },
+  searchDropdown: {
+    marginTop: 4,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 4,
+    // shadow for float feel
+    shadowColor: "#000",
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  searchItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    padding: spacing.sm,
+    borderRadius: radius.sm,
+  },
+  searchName: { color: colors.onSurface, fontWeight: "700", fontSize: 13 },
+  searchSub: { color: colors.muted, fontSize: 11, marginTop: 1 },
+  searchEmpty: {
+    color: colors.muted,
+    fontSize: 12,
+    padding: spacing.sm,
+    fontStyle: "italic",
+    textAlign: "center",
+  },
   form: {
     backgroundColor: colors.surfaceSecondary,
     borderRadius: radius.md,

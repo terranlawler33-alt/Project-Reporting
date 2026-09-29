@@ -126,4 +126,17 @@ export const api = {
       photos: { path: string; visit_id: string; timestamp: string }[];
       counts: { visits: number; reports: number; photos: number };
     }>(`/customers/history?name=${encodeURIComponent(name)}`),
+  parseProject: (text: string) =>
+    apiRequest<{
+      customer_name: string | null;
+      address: string | null;
+      project_code: string | null;
+      project_name: string | null;
+      notes: string | null;
+      materials_used: string | null;
+      start_time: string | null;
+      end_time: string | null;
+      touch_up: boolean;
+      priority_flag: string | null;
+    }>("/parse-project", { method: "POST", body: JSON.stringify({ text }) }),
 };

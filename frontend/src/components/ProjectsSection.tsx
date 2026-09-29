@@ -7,10 +7,21 @@ import {
   StyleSheet,
   Switch,
   ScrollView,
+  ActivityIndicator,
+  Alert,
 } from "react-native";
 import Ionicons from "@react-native-vector-icons/ionicons";
+import {
+  useAudioRecorder,
+  useAudioRecorderState,
+  RecordingPresets,
+  setAudioModeAsync,
+  AudioModule,
+} from "expo-audio";
 import { colors, spacing, radius } from "@/src/theme";
 import { PRIORITY_FLAGS } from "@/src/priority";
+import { transcribeAudio } from "@/src/voice";
+import { api } from "@/src/api";
 
 export type ProjectEntry = {
   id: string;
@@ -57,12 +68,93 @@ type Props = {
 
 export function ProjectsSection({ projects, onChange }: Props) {
   const [openFlagPickerFor, setOpenFlagPickerFor] = useState<string | null>(null);
+  const [dictatingFor, setDictatingFor] = useState<string | null>(null);
+  const [parsingFor, setParsingFor] = useState<string | null>(null);
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorderState = useAudioRecorderState(recorder);
 
   const update = (id: string, patch: Partial<ProjectEntry>) => {
     onChange(projects.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   };
   const remove = (id: string) => onChange(projects.filter((p) => p.id !== id));
   const add = () => onChange([...projects, newProject()]);
+
+  // Merge parsed fields into a project — only overwrite EMPTY fields, and always
+  // append parsed notes rather than clobber existing ones.
+  const mergeParsed = (id: string, parsed: any) => {
+    const current = projects.find((p) => p.id === id);
+    if (!current) return;
+    const patch: Partial<ProjectEntry> = {};
+    const isEmpty = (v: any) => v == null || String(v).trim() === "";
+    if (parsed.customer_name && isEmpty(current.customer_name)) patch.customer_name = parsed.customer_name;
+    if (parsed.address && isEmpty(current.address)) patch.address = parsed.address;
+    if (parsed.project_code && isEmpty(current.project_code)) patch.project_code = parsed.project_code;
+    if (parsed.project_name && isEmpty(current.project_name)) patch.project_name = parsed.project_name;
+    if (parsed.materials_used && isEmpty(current.materials_used)) patch.materials_used = parsed.materials_used;
+    if (parsed.start_time && isEmpty(current.start_time)) patch.start_time = parsed.start_time;
+    if (parsed.end_time && isEmpty(current.end_time)) patch.end_time = parsed.end_time;
+    if (parsed.priority_flag && !current.priority_flag) patch.priority_flag = parsed.priority_flag;
+    if (parsed.touch_up === true && !current.touch_up) patch.touch_up = true;
+    if (parsed.notes) {
+      patch.notes = current.notes
+        ? `${current.notes}\n${parsed.notes}`
+        : parsed.notes;
+    }
+    update(id, patch);
+  };
+
+  const startDictate = async (projectId: string) => {
+    if (recorderState.isRecording || dictatingFor || parsingFor) return;
+    try {
+      const perm = await AudioModule.requestRecordingPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert("Microphone permission needed", "Enable mic access to dictate this project.");
+        return;
+      }
+      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+      setDictatingFor(projectId);
+    } catch (e: any) {
+      Alert.alert("Recording failed", e?.message || "Could not start recording");
+    }
+  };
+
+  const stopDictate = async () => {
+    const projectId = dictatingFor;
+    setDictatingFor(null);
+    if (!projectId) return;
+    try {
+      await recorder.stop();
+      const uri = recorder.uri;
+      if (!uri) return;
+      setParsingFor(projectId);
+      try {
+        const text = await transcribeAudio(uri);
+        if (!text) {
+          Alert.alert("No speech detected", "Try again in a quieter spot.");
+          return;
+        }
+        const parsed = await api.parseProject(text);
+        mergeParsed(projectId, parsed);
+      } catch (e: any) {
+        Alert.alert("Could not parse", e?.message || "Please fill fields manually.");
+      } finally {
+        setParsingFor(null);
+      }
+    } catch (e: any) {
+      setParsingFor(null);
+      Alert.alert("Recording failed", e?.message || "Please try again.");
+    }
+  };
+
+  const toggleMic = (projectId: string) => {
+    if (dictatingFor === projectId) {
+      void stopDictate();
+    } else {
+      void startDictate(projectId);
+    }
+  };
 
   return (
     <View testID="projects-section" style={styles.wrap}>
@@ -77,17 +169,49 @@ export function ProjectsSection({ projects, onChange }: Props) {
         Add each job site worked on today. Pin drops from the map get attached here automatically.
       </Text>
 
-      {projects.map((p, idx) => (
+      {projects.map((p, idx) => {
+        const isRecordingThis = dictatingFor === p.id;
+        const isParsingThis = parsingFor === p.id;
+        const anotherBusy =
+          (!!dictatingFor && dictatingFor !== p.id) ||
+          (!!parsingFor && parsingFor !== p.id);
+        return (
         <View key={p.id} style={styles.card} testID={`project-card-${idx}`}>
           <View style={styles.cardHeader}>
             <Text style={styles.cardTitle}>Project {idx + 1}</Text>
-            <Pressable
-              testID={`project-remove-${idx}`}
-              onPress={() => remove(p.id)}
-              hitSlop={10}
-            >
-              <Ionicons name="trash-outline" size={18} color={colors.error} />
-            </Pressable>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
+              <Pressable
+                testID={`project-mic-${idx}`}
+                onPress={() => toggleMic(p.id)}
+                disabled={anotherBusy || isParsingThis}
+                hitSlop={8}
+                style={[
+                  styles.micBtn,
+                  isRecordingThis && styles.micBtnRecording,
+                  (anotherBusy || isParsingThis) && { opacity: 0.5 },
+                ]}
+              >
+                {isParsingThis ? (
+                  <ActivityIndicator size="small" color={colors.onBrandPrimary} />
+                ) : (
+                  <Ionicons
+                    name={isRecordingThis ? "stop" : "mic"}
+                    size={14}
+                    color={colors.onBrandPrimary}
+                  />
+                )}
+                <Text style={styles.micBtnText}>
+                  {isParsingThis ? "Parsing…" : isRecordingThis ? "Stop" : "Dictate"}
+                </Text>
+              </Pressable>
+              <Pressable
+                testID={`project-remove-${idx}`}
+                onPress={() => remove(p.id)}
+                hitSlop={10}
+              >
+                <Ionicons name="trash-outline" size={18} color={colors.error} />
+              </Pressable>
+            </View>
           </View>
 
           <Text style={styles.label}>Customer name</Text>
@@ -266,7 +390,8 @@ export function ProjectsSection({ projects, onChange }: Props) {
             <Text style={styles.photosLabel}>📎 {p.photos.length} photo(s) from map</Text>
           ) : null}
         </View>
-      ))}
+        );
+      })}
 
       <Pressable testID="add-another-project" onPress={add} style={styles.addBtn}>
         <Ionicons name="add-circle" size={20} color={colors.onBrandPrimary} />
@@ -313,6 +438,17 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xs,
   },
   cardTitle: { fontSize: 13, fontWeight: "800", color: colors.brandPrimary, textTransform: "uppercase" },
+  micBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: colors.brandPrimary,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+  },
+  micBtnRecording: { backgroundColor: colors.error },
+  micBtnText: { color: colors.onBrandPrimary, fontWeight: "800", fontSize: 11 },
   label: {
     color: colors.onSurfaceTertiary,
     fontSize: 12,

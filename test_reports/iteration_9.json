@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 9 — POST /api/parse-project (Voice-to-Project) backend tests. 16/16 passed (100%). Covered structured parsing happy-path, empty/whitespace 400 validation, 5000+ char truncation to 200, gibberish fallback, auth (401/403 without/with bad token), and schema consistency across 4 parametrized inputs (all responses contain exactly the 10 documented keys; touch_up is always bool; other fields are non-empty string or null). Regression PASSED for GET /api/reports, POST /api/reports (with `projects` payload), POST /api/reports/{id}/tts (voice_provider=openai as expected due to ElevenLabs quota), GET /api/customers/history?name=, and POST /api/transcribe reachability. Endpoint's forgiving null-fill fallback path is honored — tests accept both LLM-parsed and fallback responses when the LLM produces unparseable output.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration9_parse_project.py",
+    "/app/test_reports/pytest/pytest_iteration9.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is ~1997 lines — approaching the 700-line split threshold; consider splitting into routers (auth, reports, visits, customers, ai) in a future iteration (not blocking).",
+    "/api/parse-project endpoint has clean input validation (empty->400, length truncation), robust JSON extraction (handles ```json fences and stray prose), and safe fallback path when the LLM output is unparseable — good defensive coding.",
+    "Schema normalization via _s() correctly converts empty strings to None, so the response never contains empty-string fields (matches contract).",
+    "touch_up is coerced to bool via bool(parsed.get('touch_up', False)) — safe default.",
+    "No caching for /parse-project (documented as intentional). If cost/latency becomes an issue, a simple text-hash TTL cache could be added."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration9_parse_project.py (new)",
+    "/app/test_reports/pytest/pytest_iteration9.xml (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (16/16)",
+    "frontend": "not tested (backend-only iteration)"
+  },
+  "seed_data_creation": "One TEST_IT9_* customer/report was created by the regression `test_post_reports_with_projects_payload` test to validate persistence and to feed the TTS + customer-history regression tests. Prefixed TEST_IT9_ for easy cleanup.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 9 fully green. /api/parse-project uses gpt-5.4 via LlmChat and typically responds in 2-4s. Timeout of 45s is used in tests to comfortably cover LLM latency. Schema keys: {customer_name, address, project_code, project_name, notes, materials_used, start_time, end_time, touch_up, priority_flag}. touch_up is always bool; other fields are None or non-empty string. Unauthenticated returns 403 (FastAPI HTTPBearer default). TTS response key is `audio_data_url` (data-URI base64) — remember this for future TTS assertions.",
+  "rca_of_issue": "N/A — no bugs discovered. Only self-inflicted test-assertion mismatch (audio_url vs audio_data_url) which was fixed and re-verified."
+}

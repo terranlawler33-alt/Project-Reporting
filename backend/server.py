@@ -1137,6 +1137,109 @@ async def transcribe(audio: UploadFile = File(...), user: dict = Depends(current
                 pass
 
 
+# ---------- Parse Project from Voice / Text ----------
+class ParseProjectRequest(BaseModel):
+    text: str
+
+
+@api.post("/parse-project")
+async def parse_project(data: ParseProjectRequest, _: dict = Depends(current_user)):
+    """Convert dictated (or free-form) text into structured project fields.
+    Returns a strict JSON object with keys matching ProjectEntry.
+    Fields the LLM cannot infer are returned as null. Frontend should
+    only overwrite fields the user hasn't already edited manually.
+    """
+    text = (data.text or "").strip()
+    if not text:
+        raise HTTPException(400, "Empty text")
+    if len(text) > 4000:
+        text = text[:4000]
+
+    system = (
+        "You are a helpful parser for a painting field-crew mobile app. Given a short "
+        "voice-dictated project description, extract structured fields. Return ONLY a "
+        "single JSON object (no prose, no code fences, no explanation). Use null for "
+        "any field you cannot confidently infer. Never invent facts.\n\n"
+        "Schema (all fields optional, string unless noted):\n"
+        "{\n"
+        '  "customer_name": string | null,\n'
+        '  "address": string | null,\n'
+        '  "project_code": string | null,   // e.g. "P-1042"\n'
+        '  "project_name": string | null,\n'
+        '  "notes": string | null,          // the actual work performed\n'
+        '  "materials_used": string | null, // paint, brushes, drop cloths, etc.\n'
+        '  "start_time": string | null,     // "8:00 AM" format if mentioned\n'
+        '  "end_time": string | null,\n'
+        '  "touch_up": boolean,             // true if user mentioned touch-ups needed\n'
+        '  "priority_flag": string | null   // one of: "Touch-Ups","Change Order",\n'
+        '                                   // "Labor Issue","Property Damage",\n'
+        '                                   // "Schedule Conflict","Wrong Materials"\n'
+        "}\n"
+        "If the crew mentioned it needs a return visit or touch-ups, set touch_up=true "
+        "AND priority_flag=\"Touch-Ups\"."
+    )
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"parse-project-{uuid4()}",
+            system_message=system,
+        ).with_model("openai", "gpt-5.4")
+        raw = await chat.send_message(UserMessage(text=text))
+    except Exception as e:
+        logger.error(f"parse_project LLM call failed: {e}")
+        raise HTTPException(502, f"AI parse failed: {str(e)[:120]}")
+
+    body = raw if isinstance(raw, str) else str(raw)
+    # Extract the first JSON object from the response (LLMs sometimes wrap in fences)
+    import json as _json
+    body = body.strip()
+    if body.startswith("```"):
+        body = re.sub(r"^```[a-zA-Z]*\n?", "", body)
+        body = re.sub(r"\n?```$", "", body)
+    # Grab from first { to matching last }
+    first = body.find("{")
+    last = body.rfind("}")
+    if first == -1 or last == -1 or last <= first:
+        logger.warning(f"parse_project: no JSON object in response: {body[:200]!r}")
+        return {
+            "customer_name": None, "address": None, "project_code": None,
+            "project_name": None, "notes": text[:280], "materials_used": None,
+            "start_time": None, "end_time": None, "touch_up": False,
+            "priority_flag": None,
+        }
+    try:
+        parsed = _json.loads(body[first:last + 1])
+    except Exception as e:
+        logger.warning(f"parse_project: JSON parse failed: {e} :: {body[:200]!r}")
+        return {
+            "customer_name": None, "address": None, "project_code": None,
+            "project_name": None, "notes": text[:280], "materials_used": None,
+            "start_time": None, "end_time": None, "touch_up": False,
+            "priority_flag": None,
+        }
+
+    # Normalize
+    def _s(v: Any) -> Optional[str]:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
+    result = {
+        "customer_name": _s(parsed.get("customer_name")),
+        "address": _s(parsed.get("address")),
+        "project_code": _s(parsed.get("project_code")),
+        "project_name": _s(parsed.get("project_name")),
+        "notes": _s(parsed.get("notes")) or text[:280],
+        "materials_used": _s(parsed.get("materials_used")),
+        "start_time": _s(parsed.get("start_time")),
+        "end_time": _s(parsed.get("end_time")),
+        "touch_up": bool(parsed.get("touch_up", False)),
+        "priority_flag": _s(parsed.get("priority_flag")),
+    }
+    return result
+
+
 # ---------- Customer Directory ----------
 class CustomerCreate(BaseModel):
     name: str
