@@ -8,7 +8,6 @@ Field-ops daily reporting mobile app for a painting/construction company. Field 
 - FastAPI + MongoDB backend, APScheduler for weekly cron
 - Emergent Universal LLM Key (GPT 5.4 summaries + digests, Whisper-1 transcription)
 - Emergent Resend for daily & weekly emails
-- Emergent Managed Push (SuprSend passthrough)
 - Emergent Managed Object Storage for visit photos
 - ElevenLabs TTS for "Read aloud"
 - Open-Meteo for weather
@@ -31,7 +30,6 @@ Owner, Operations, Sales, Production, Labor (Subcontractor), Project Manager. Ad
 - Admin: manage users (role/title/department/job code), customer directory, weekly digest (manual send + Monday-morning auto-scheduler)
 
 ### Cross-cutting
-- **Push notifications** (Emergent managed): fires on report create (→ owner/ops/admin), digest send (→ management), signature captured (→ report author). Tap deep-links to `/report/{id}`.
 - **Offline queue**: caches visits/breaks/sms during network drops; flushes on next Home load.
 - **Portal share link**: `GET /api/public/reports/{token}` returns a limited public JSON view — no login required.
 

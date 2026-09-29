@@ -72,13 +72,6 @@
           "photosPermission": "Attach job-site photos to daily reports.",
           "cameraPermission": "Snap job-site photos for daily reports."
         }
-      ],
-      [
-        "expo-notifications",
-        {
-          "icon": "./assets/images/icon.png",
-          "color": "#D97706"
-        }
       ]
     ],
     "experiments": {

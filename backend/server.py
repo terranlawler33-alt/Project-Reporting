@@ -46,8 +46,6 @@ EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
 EMERGENT_EMAIL_KEY = os.environ["EMERGENT_EMAIL_KEY"]
 EMAIL_FROM_NAME = os.environ["EMAIL_FROM_NAME"]
 EMAIL_BASE_URL = "https://integrations.emergentagent.com"
-PUSH_BASE_URL = "https://integrations.emergentagent.com"
-EMERGENT_PUSH_KEY = os.environ.get("EMERGENT_PUSH_KEY", "placeholder")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")
 ALGORITHM = "HS256"
@@ -763,17 +761,6 @@ async def create_report(data: ReportCreate, request: Request, user: dict = Depen
     await request.app.db.reports.insert_one(report.copy())
     report.pop("_id", None)
 
-    # Push notification to management (owner/ops/admin) — fire and forget
-    try:
-        await _notify_management(
-            request.app,
-            title=f"New report — {user['name']}",
-            message=(data.highlights or ai_summary)[:120],
-            action_url=f"/report/{report['id']}",
-        )
-    except Exception as e:
-        logger.warning(f"Push (report) failed: {e}")
-
     # Send emails to recipients
     if data.recipient_emails:
         sent = []
@@ -1041,16 +1028,6 @@ async def weekly_digest(data: DigestRequest, request: Request, admin: dict = Dep
         digest_doc["email_sent_to"] = sent
 
     digest_doc.pop("_id", None)
-    # Push to management team about the fresh digest
-    try:
-        await _notify_management(
-            request.app,
-            title="Weekly digest ready",
-            message=f"{len(reports)} reports rolled up — check your inbox.",
-            action_url="/(tabs)/reports",
-        )
-    except Exception as e:
-        logger.warning(f"Push (digest) failed: {e}")
     return digest_doc
 
 
@@ -1074,20 +1051,6 @@ async def add_signature(report_id: str, data: SignaturePayload, request: Request
         "signed_at": datetime.now(timezone.utc).isoformat(),
     }
     await request.app.db.reports.update_one({"id": report_id}, {"$set": {"signature": signature}})
-    # Fire push notification to the report author
-    try:
-        author_id = doc["user_id"]
-        if author_id and author_id != user["id"]:
-            await send_push(
-                recipients=[author_id],
-                data={
-                    "title": "Customer signed off",
-                    "message": f"{data.customer_name} signed the report for {doc.get('project_name') or doc['report_date']}.",
-                    "action_url": f"/report/{report_id}",
-                },
-            )
-    except Exception as e:
-        logger.warning(f"Push (signature) failed: {e}")
     return {"ok": True, "signature": signature}
 
 
@@ -1176,89 +1139,6 @@ async def regenerate_summary(report_id: str, request: Request, user: dict = Depe
     )
     fresh = await request.app.db.reports.find_one({"id": report_id}, {"_id": 0})
     return DailyReport(**fresh)
-
-
-# ---------- Push Notifications (Emergent managed) ----------
-class RegisterPushBody(BaseModel):
-    user_id: str
-    platform: str
-    device_token: str
-
-
-@api.post("/register-push", status_code=201)
-async def register_push(body: RegisterPushBody, request: Request, user: dict = Depends(current_user)):
-    if body.user_id != user["id"] and not user.get("is_admin"):
-        raise HTTPException(403, "Cannot register token for another user")
-    # Persist a lightweight record locally (helps admin visibility only)
-    await request.app.db.push_tokens.update_one(
-        {"user_id": body.user_id, "device_token": body.device_token},
-        {"$set": {
-            "user_id": body.user_id,
-            "platform": body.platform,
-            "device_token": body.device_token,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }},
-        upsert=True,
-    )
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{PUSH_BASE_URL}/api/v1/push/users/register",
-                headers={"X-Push-Key": EMERGENT_PUSH_KEY},
-                json=body.model_dump(),
-            )
-        if resp.status_code == 401:
-            logger.warning("EMERGENT_PUSH_KEY missing or invalid; push registration is a no-op in preview")
-            return {"status": "registered", "note": "push key missing in preview"}
-        if resp.status_code >= 500:
-            raise HTTPException(502, "Push provider unavailable")
-        resp.raise_for_status()
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning(f"Push register upstream failed (non-blocking): {e}")
-    return {"status": "registered"}
-
-
-async def send_push(recipients: List[str], data: dict, idempotency_key: Optional[str] = None) -> None:
-    recipients = [r for r in recipients if r]
-    if not recipients:
-        return
-    recipients = recipients[:100]
-    if "title" not in data or "message" not in data:
-        raise ValueError("data must include title and message")
-    payload: dict = {"recipients": recipients, "data": data}
-    if idempotency_key:
-        payload["$idempotency_key"] = idempotency_key
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{PUSH_BASE_URL}/api/v1/push/trigger",
-                headers={"X-Push-Key": EMERGENT_PUSH_KEY},
-                json=payload,
-            )
-        if resp.status_code == 401:
-            logger.warning("EMERGENT_PUSH_KEY invalid; push trigger skipped")
-            return
-        if resp.status_code >= 500:
-            logger.warning(f"Push trigger 5xx: {resp.text[:200]}")
-            return
-        resp.raise_for_status()
-    except Exception as e:
-        logger.warning(f"send_push failed (non-blocking): {e}")
-
-
-async def _notify_management(app: FastAPI, title: str, message: str, action_url: Optional[str] = None):
-    role_targets = {Role.OWNER.value, Role.OPERATIONS.value}
-    docs = await app.db.users.find(
-        {"$or": [{"role": {"$in": list(role_targets)}}, {"is_admin": True}]},
-        {"_id": 0, "id": 1},
-    ).to_list(500)
-    user_ids = [d["id"] for d in docs]
-    data = {"title": title, "message": message}
-    if action_url:
-        data["action_url"] = action_url
-    await send_push(user_ids, data)
 
 
 # ---------- ElevenLabs TTS ----------
