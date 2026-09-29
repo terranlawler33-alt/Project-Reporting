@@ -58,6 +58,13 @@ export default function ProfileScreen() {
               onPress={() => router.push("/admin/users")}
             />
             <Row
+              testID="admin-groups-nav"
+              icon="mail-open"
+              title="Recipient Groups"
+              subtitle="Save Owners / Ops / Subs to send with one tap"
+              onPress={() => router.push("/admin/recipient-groups")}
+            />
+            <Row
               testID="admin-digest-nav"
               icon="mail-unread"
               title="Weekly Digest"

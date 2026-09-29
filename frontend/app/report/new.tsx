@@ -24,6 +24,7 @@ import {
 } from "expo-audio";
 import { api } from "@/src/api";
 import { transcribeAudio } from "@/src/voice";
+import { RecipientGroupPicker } from "@/src/components/RecipientGroupPicker";
 import { colors, spacing, radius } from "@/src/theme";
 
 export default function NewReport() {
@@ -223,6 +224,17 @@ export default function NewReport() {
         </View>
 
         <Text style={styles.label}>Email to management (comma-separated)</Text>
+        <RecipientGroupPicker
+          testID="new-report-group-picker"
+          onPick={(emails) => {
+            const existing = emailsText
+              .split(",")
+              .map((e) => e.trim())
+              .filter((e) => e.length > 0);
+            const merged = Array.from(new Set([...existing, ...emails]));
+            setEmailsText(merged.join(", "));
+          }}
+        />
         <TextInput
           testID="report-emails"
           value={emailsText}

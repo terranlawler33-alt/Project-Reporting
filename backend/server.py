@@ -1091,6 +1091,93 @@ async def add_signature(report_id: str, data: SignaturePayload, request: Request
     return {"ok": True, "signature": signature}
 
 
+# ---------- Recipient Groups ----------
+class RecipientGroupCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    emails: List[EmailStr] = Field(default_factory=list)
+
+
+class RecipientGroup(BaseModel):
+    id: str
+    name: str
+    emails: List[EmailStr]
+    created_by: str
+    created_at: str
+
+
+@api.post("/recipient-groups", response_model=RecipientGroup, status_code=201)
+async def create_group(data: RecipientGroupCreate, request: Request, admin: dict = Depends(admin_only)):
+    doc = {
+        "id": str(uuid4()),
+        "name": data.name,
+        "emails": [str(e) for e in data.emails],
+        "created_by": admin["id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await request.app.db.recipient_groups.insert_one(doc.copy())
+    doc.pop("_id", None)
+    return RecipientGroup(**doc)
+
+
+@api.get("/recipient-groups", response_model=List[RecipientGroup])
+async def list_groups(request: Request, user: dict = Depends(current_user)):
+    docs = await request.app.db.recipient_groups.find({}, {"_id": 0}).sort("name", 1).to_list(200)
+    return [RecipientGroup(**d) for d in docs]
+
+
+@api.patch("/recipient-groups/{group_id}", response_model=RecipientGroup)
+async def update_group(group_id: str, data: RecipientGroupCreate, request: Request, _: dict = Depends(admin_only)):
+    result = await request.app.db.recipient_groups.find_one_and_update(
+        {"id": group_id},
+        {"$set": {"name": data.name, "emails": [str(e) for e in data.emails]}},
+        return_document=True,
+        projection={"_id": 0},
+    )
+    if not result:
+        raise HTTPException(404, "Group not found")
+    return RecipientGroup(**result)
+
+
+@api.delete("/recipient-groups/{group_id}")
+async def delete_group(group_id: str, request: Request, _: dict = Depends(admin_only)):
+    r = await request.app.db.recipient_groups.delete_one({"id": group_id})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "Group not found")
+    return {"ok": True}
+
+
+# ---------- Regenerate report summary ----------
+@api.post("/reports/{report_id}/regenerate-summary", response_model=DailyReport)
+async def regenerate_summary(report_id: str, request: Request, user: dict = Depends(current_user)):
+    doc = await _report_owner_check(request, report_id, user)
+    ai_context = {
+        "author_name": doc["author_name"],
+        "author_role": doc["author_role"],
+        "report_date": doc["report_date"],
+        "project_code": doc.get("project_code"),
+        "project_name": doc.get("project_name"),
+        "highlights": doc.get("highlights", ""),
+        "delays": doc.get("delays", ""),
+        "change_orders": doc.get("change_orders", ""),
+        "material_notes": doc.get("material_notes", ""),
+        "visits": doc.get("visits", []),
+        "breaks": doc.get("breaks", []),
+        "sms_logs": doc.get("sms_logs", []),
+        "weather": doc.get("weather"),
+    }
+    new_summary = await build_ai_summary(ai_context)
+    await request.app.db.reports.update_one(
+        {"id": report_id},
+        {"$set": {
+            "ai_summary": new_summary,
+            "tts_cache": None,
+            "regenerated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    fresh = await request.app.db.reports.find_one({"id": report_id}, {"_id": 0})
+    return DailyReport(**fresh)
+
+
 # ---------- Push Notifications (Emergent managed) ----------
 class RegisterPushBody(BaseModel):
     user_id: str

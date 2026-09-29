@@ -105,7 +105,16 @@ export const api = {
   setSchedule: (payload: any) =>
     apiRequest<any>("/digest/schedule", { method: "PUT", body: JSON.stringify(payload) }),
   ttsReport: (report_id: string) =>
-    apiRequest<{ audio_data_url: string; bytes: number }>(`/reports/${report_id}/tts`, {
+    apiRequest<{ audio_data_url: string; bytes: number; cached?: boolean }>(`/reports/${report_id}/tts`, {
       method: "POST",
     }),
+  listGroups: () => apiRequest<any[]>("/recipient-groups"),
+  createGroup: (payload: any) =>
+    apiRequest<any>("/recipient-groups", { method: "POST", body: JSON.stringify(payload) }),
+  updateGroup: (id: string, payload: any) =>
+    apiRequest<any>(`/recipient-groups/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteGroup: (id: string) =>
+    apiRequest<{ ok: boolean }>(`/recipient-groups/${id}`, { method: "DELETE" }),
+  regenerateSummary: (report_id: string) =>
+    apiRequest<any>(`/reports/${report_id}/regenerate-summary`, { method: "POST" }),
 };

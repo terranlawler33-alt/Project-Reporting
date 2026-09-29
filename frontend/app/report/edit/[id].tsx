@@ -22,6 +22,7 @@ export default function EditReport() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState({
     project_name: "",
@@ -62,6 +63,20 @@ export default function EditReport() {
     }
   };
 
+  const saveAndRegenerate = async () => {
+    setError(null);
+    setRegenerating(true);
+    try {
+      await api.patchReport(id!, form);
+      await api.regenerateSummary(id!);
+      router.back();
+    } catch (e: any) {
+      setError(e.message || "Refresh failed");
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
   if (loading) {
     return (
       <View style={styles.center}>
@@ -95,17 +110,44 @@ export default function EditReport() {
         <Pressable
           testID="edit-save"
           onPress={save}
-          disabled={saving}
+          disabled={saving || regenerating}
           style={({ pressed }) => [
             styles.primaryBtn,
             pressed && { opacity: 0.85 },
-            saving && { opacity: 0.7 },
+            (saving || regenerating) && { opacity: 0.7 },
           ]}
         >
           {saving ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Text style={styles.primaryBtnText}>Save</Text>}
         </Pressable>
+
+        <Pressable
+          testID="edit-regenerate"
+          onPress={saveAndRegenerate}
+          disabled={saving || regenerating}
+          style={({ pressed }) => [
+            styles.secondaryBtn,
+            pressed && { opacity: 0.85 },
+            (saving || regenerating) && { opacity: 0.7 },
+          ]}
+        >
+          {regenerating ? (
+            <>
+              <ActivityIndicator color={colors.brandPrimary} />
+              <Text style={[styles.secondaryBtnText, { marginLeft: spacing.sm }]}>
+                Re-running GPT 5.4…
+              </Text>
+            </>
+          ) : (
+            <>
+              <Ionicons name="sparkles" size={16} color={colors.brandPrimary} />
+              <Text style={[styles.secondaryBtnText, { marginLeft: spacing.sm }]}>
+                Save & Refresh AI Summary
+              </Text>
+            </>
+          )}
+        </Pressable>
         <Text style={styles.note}>
-          Editing the report body does NOT regenerate the AI summary. Create a new report to re-run AI.
+          "Save" keeps the raw edits. "Save & Refresh" rewrites the AI summary using your latest fields.
         </Text>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -177,6 +219,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   primaryBtnText: { color: colors.onBrandPrimary, fontWeight: "700", fontSize: 15 },
+  secondaryBtn: {
+    marginTop: spacing.md,
+    backgroundColor: colors.brandTertiary,
+    padding: spacing.md + 2,
+    borderRadius: radius.md,
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "center",
+  },
+  secondaryBtnText: { color: colors.brandPrimary, fontWeight: "700", fontSize: 15 },
   note: { color: colors.muted, fontSize: 11, marginTop: spacing.md, textAlign: "center" },
   error: { color: colors.error, marginTop: spacing.md, fontSize: 13 },
 });

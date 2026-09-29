@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 5: backend + frontend testing for Recipient Groups CRUD (admin-only) and Regenerate AI Summary. Backend: 38/38 passed (1 intentional skip to save GPT credits) in /app/backend/tests/test_iteration5.py — covers (a) recipient-groups full CRUD with admin-only enforcement, list visible to any authenticated user, 404 on unknown id, 403 on non-admin PATCH/DELETE, delete verified via subsequent list absence + 404 on re-delete; (b) POST /api/reports/{id}/regenerate-summary: 401 no-token, 404 bad id, 403 foreign report by non-management (prod2 -> prod's report), 200 happy-path returns DailyReport with non-empty ai_summary that differs from pre-regen value and tts_cache=null; (c) full regression smoke on iteration 1-4 endpoints — auth/me, admin/users, visits/today, breaks/today, sms-logs/today, reports list+detail+portal-link+public GET+workday-export+archive+delete (soft-delete verified via deleted_at), digest/schedule, customers, weather, transcribe(400), register-push, signature. Frontend E2E on 390x844 web preview: admin login -> /admin/recipient-groups -> +/Save creates card, Edit rename saves, Delete removes card; /report/new group chip appended emails 'uix1@paintops.com, uix2@paintops.com' into report-emails; /admin/digest both manual (digest-emails) and scheduler (sched-emails) chip tap appended emails; /reports kebab -> Edit -> change highlights -> 'Save & Refresh AI Summary' -> screen closed after ~5-15s, GET report showed ai_summary changed (2317 chars -> 2199 chars) and tts_cache=null.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "React Native Web / styles", "issue": "Runtime warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' (carry-over from iteration 4, non-blocking). Reference: multiple screens use shadowColor/shadowOffset/shadowOpacity/shadowRadius."},
+      {"component": "expo-notifications on web", "issue": "Warning: '[expo-notifications] Listening to push token changes is not yet fully supported on web.' Carry-over from iteration 4, non-blocking on web preview."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration5.py",
+    "/app/test_reports/pytest/pytest_iteration5.xml"
+  ],
+  "action_items": [
+    "No blocking issues. Iteration-5 backend + frontend acceptance criteria all met.",
+    "(Nit) The regenerate-summary endpoint writes `regenerated_at` to Mongo but DailyReport response model does not include the field, so callers never see the timestamp. Add `regenerated_at: Optional[str] = None` to DailyReport if the UI wants to show 'Regenerated at ...' (currently returns None even after a successful regen).",
+    "(Nit, carry-over) /app/backend/server.py is 1658 lines — still worth splitting into routers.",
+    "(Optional carry-over) Migrate deprecated `shadow*` StyleSheet props to `boxShadow` (or Platform.select) to silence RN Web deprecation warning."
+  ],
+  "critical_code_review_comments": [
+    "Recipient Groups list endpoint uses `current_user` (any authenticated user can list). Spec says 'Admin-only CRUD' — write access is properly gated to admin_only but READ is open. This matches the frontend requirement (RecipientGroupPicker needs to fetch the list for non-admin authors on Report Composer), so it is likely intentional; documenting for clarity.",
+    "server.py:1145 — `RecipientGroupCreate` `name` is validated but there is no uniqueness constraint. Two groups can share the same name, which could confuse the picker. Consider a unique index on (name).",
+    "server.py:1150 — regenerate-summary sets `tts_cache: None` and `regenerated_at`, but only `ai_summary` and `tts_cache` are declared in DailyReport, so `regenerated_at` is silently dropped by the response_model.",
+    "server.py:1173 — no rate-limit on regenerate-summary. Each call burns a GPT-5.4 credit; a mis-clicking user could spam it. Consider a 30s cooldown per report on the server or a debounced 'saving...' state in the UI."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration5.py (new — 39 pytest tests: recipient-groups CRUD, regenerate-summary auth/404/403/happy, regression smoke on iterations 1-4)"
+  ],
+  "success_rate": {"backend": "100% (38/38 pass, 1 intentional skip)", "frontend": "100% — all 3 UI flows (groups CRUD, composer picker, digest pickers, regenerate) verified"},
+  "seed_data_creation": "Reused admin@paintops.com/Admin@12345 + production@paintops.com/Prod@12345 + prod2@paintops.com/Prod@12345. Test run creates & deletes a TEST_Owners_IT5 recipient group. UI test creates a UITEST_Owners_<ts> group and deletes it via API at end. Two TEST-Iteration5 reports remain in DB (Regenerate Project by prod, Foreign Regen by prod2). Throwaway TEST Iteration5 To Delete report is soft-deleted (deleted_at set).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "EXPO_PUBLIC_BACKEND_URL=https://project-digest-7.preview.emergentagent.com. Auth token localStorage key on web is 'paintops_token' (NOT paintops.token). Admin admin@paintops.com/Admin@12345, prod production@paintops.com/Prod@12345, prod2 prod2@paintops.com/Prod@12345. Run pytest with `-n 0` (pytest.ini enforces -n 2 which breaks module-scoped State fixture). Regenerate endpoint burns ~1 GPT credit per call — keep to ONE call per test run. Recipient groups list is readable by any authenticated user (only write is admin-only). RecipientGroupPicker in /report/new + /admin/digest hides itself when zero groups exist — create at least one group before testing chip flows. All new testIDs verified: group-add, group-name, group-emails, group-save, group-cancel, group-card-{id}, group-edit-{id}, group-delete-{id}, new-report-group-picker-group-{id}, digest-group-picker-group-{id}, sched-group-picker-group-{id}, edit-regenerate.",
+  "rca_of_issue": "N/A — no functional bugs found. Self-inflicted test fixes: (1) initial regression paths used /visits, /breaks, /sms — actual endpoints are /visits/today, /breaks/today, /sms-logs/today; (2) archive is POST not PATCH; (3) after soft-delete, GET /reports/{id} still returns 200 with deleted_at set (not 404) — this is the current backend design and matches iteration 1-4 behavior. All corrected in the pytest file."
+}

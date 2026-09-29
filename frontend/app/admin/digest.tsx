@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import { api } from "@/src/api";
+import { RecipientGroupPicker } from "@/src/components/RecipientGroupPicker";
 import { colors, spacing, radius } from "@/src/theme";
 
 const DAYS = [
@@ -129,6 +130,14 @@ export default function WeeklyDigest() {
         </View>
 
         <Text style={styles.label}>Recipient emails (comma-separated)</Text>
+        <RecipientGroupPicker
+          testID="digest-group-picker"
+          onPick={(picked) => {
+            const existing = emails.split(",").map((e) => e.trim()).filter(Boolean);
+            const merged = Array.from(new Set([...existing, ...picked]));
+            setEmails(merged.join(", "));
+          }}
+        />
         <TextInput
           testID="digest-emails"
           value={emails}
@@ -240,6 +249,14 @@ export default function WeeklyDigest() {
           </View>
 
           <Text style={styles.label}>Recipient emails (comma-separated)</Text>
+          <RecipientGroupPicker
+            testID="sched-group-picker"
+            onPick={(picked) => {
+              const existing = schedEmails.split(",").map((e) => e.trim()).filter(Boolean);
+              const merged = Array.from(new Set([...existing, ...picked]));
+              setSchedEmails(merged.join(", "));
+            }}
+          />
           <TextInput
             testID="sched-emails"
             value={schedEmails}
