@@ -117,4 +117,13 @@ export const api = {
     apiRequest<{ ok: boolean }>(`/recipient-groups/${id}`, { method: "DELETE" }),
   regenerateSummary: (report_id: string) =>
     apiRequest<any>(`/reports/${report_id}/regenerate-summary`, { method: "POST" }),
+  customerHistory: (name: string) =>
+    apiRequest<{
+      customer: any | null;
+      name: string;
+      visits: any[];
+      reports: any[];
+      photos: { path: string; visit_id: string; timestamp: string }[];
+      counts: { visits: number; reports: number; photos: number };
+    }>(`/customers/history?name=${encodeURIComponent(name)}`),
 };

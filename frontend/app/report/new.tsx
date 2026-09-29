@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -26,6 +26,7 @@ import { api } from "@/src/api";
 import { transcribeAudio } from "@/src/voice";
 import { RecipientGroupPicker } from "@/src/components/RecipientGroupPicker";
 import { PriorityPicker, PriorityFlagEntry } from "@/src/components/PriorityPicker";
+import { ProjectsSection, ProjectEntry } from "@/src/components/ProjectsSection";
 import { flagRequiresReason } from "@/src/priority";
 import { colors, spacing, radius } from "@/src/theme";
 
@@ -48,9 +49,66 @@ export default function NewReport() {
   const [transcribing, setTranscribing] = useState(false);
   const [priorityLevel, setPriorityLevel] = useState<string | null>(null);
   const [priorityFlags, setPriorityFlags] = useState<PriorityFlagEntry[]>([]);
+  const [projects, setProjects] = useState<ProjectEntry[]>([]);
 
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(recorder);
+
+  // Pre-populate projects from today's visits (grouped by project_id when set)
+  useEffect(() => {
+    (async () => {
+      try {
+        const visits = await api.visitsToday();
+        if (!Array.isArray(visits) || visits.length === 0) return;
+        const byPid = new Map<string, ProjectEntry>();
+        const derived: ProjectEntry[] = [];
+        for (const v of visits) {
+          const pid: string | null = v.project_id || null;
+          if (pid && byPid.has(pid)) {
+            const existing = byPid.get(pid)!;
+            existing.visit_ids = [...(existing.visit_ids || []), v.id];
+            existing.photos = [...(existing.photos || []), ...(v.photos || [])];
+            if (v.notes) {
+              existing.notes = existing.notes
+                ? `${existing.notes}\n${v.notes}`
+                : v.notes;
+            }
+            continue;
+          }
+          const entry: ProjectEntry = {
+            id: pid || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            project_code: v.project_code || "",
+            project_name: "",
+            customer_name: v.customer_name || "",
+            address: v.address || "",
+            latitude: v.latitude,
+            longitude: v.longitude,
+            notes: v.notes || "",
+            materials_used: "",
+            start_time: v.timestamp
+              ? new Date(v.timestamp).toLocaleTimeString([], {
+                  hour: "numeric",
+                  minute: "2-digit",
+                })
+              : "",
+            end_time: v.ended_at
+              ? new Date(v.ended_at).toLocaleTimeString([], {
+                  hour: "numeric",
+                  minute: "2-digit",
+                })
+              : "",
+            priority_flag: null,
+            touch_up: false,
+            photos: v.photos || [],
+            visit_ids: [v.id],
+          };
+          if (pid) byPid.set(pid, entry);
+          derived.push(entry);
+        }
+        setProjects(derived);
+      } catch {}
+    })();
+  }, []);
 
   const toggleRecord = async () => {
     if (recorderState.isRecording) {
@@ -120,6 +178,23 @@ export default function NewReport() {
         recipient_emails,
         priority_level: priorityLevel,
         priority_flags: priorityFlags.map((f) => ({ type: f.type, reason: f.reason || null })),
+        projects: projects.map((p) => ({
+          id: p.id,
+          project_code: p.project_code || null,
+          project_name: p.project_name || null,
+          customer_name: p.customer_name || null,
+          address: p.address || null,
+          latitude: p.latitude ?? null,
+          longitude: p.longitude ?? null,
+          notes: p.notes || null,
+          materials_used: p.materials_used || null,
+          start_time: p.start_time || null,
+          end_time: p.end_time || null,
+          priority_flag: p.priority_flag || null,
+          touch_up: !!p.touch_up,
+          photos: p.photos || [],
+          visit_ids: p.visit_ids || [],
+        })),
       });
       router.replace(`/report/${r.id}`);
     } catch (e: any) {
@@ -229,6 +304,8 @@ export default function NewReport() {
           style={[styles.input, styles.multi]}
           multiline
         />
+
+        <ProjectsSection projects={projects} onChange={setProjects} />
 
         <View style={styles.togglesCard}>
           <Toggle label="Include today's visits" value={includeVisits} onChange={setIncludeVisits} testID="toggle-visits" />

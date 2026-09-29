@@ -113,6 +113,7 @@ class LocationVisitCreate(BaseModel):
     address: Optional[str] = None
     project_code: Optional[str] = None
     notes: Optional[str] = None
+    project_id: Optional[str] = None  # links visit to a Project inside today's report
 
 
 class LocationVisit(LocationVisitCreate):
@@ -163,6 +164,25 @@ class WeatherAttachment(BaseModel):
     fetched_at: str
 
 
+class ProjectEntry(BaseModel):
+    """A single project block inside a DailyReport. A report can have many."""
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    project_code: Optional[str] = None
+    project_name: Optional[str] = None
+    customer_name: Optional[str] = None
+    address: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    notes: Optional[str] = None
+    materials_used: Optional[str] = None
+    start_time: Optional[str] = None  # HH:MM or ISO
+    end_time: Optional[str] = None
+    priority_flag: Optional[str] = None  # e.g. "Touch-Ups", "Change Order"
+    touch_up: bool = False
+    photos: List[str] = []
+    visit_ids: List[str] = []
+
+
 class ReportCreate(BaseModel):
     project_code: Optional[str] = None
     project_name: Optional[str] = None
@@ -177,6 +197,7 @@ class ReportCreate(BaseModel):
     recipient_emails: List[EmailStr] = []
     priority_level: Optional[str] = None  # "High" | "Medium" | "Low" | None
     priority_flags: List[dict] = Field(default_factory=list)  # [{"type": str, "reason": Optional[str]}]
+    projects: List[ProjectEntry] = Field(default_factory=list)
 
 
 class DailyReport(BaseModel):
@@ -205,6 +226,7 @@ class DailyReport(BaseModel):
     public_token: Optional[str] = None
     priority_level: Optional[str] = None
     priority_flags: List[dict] = []
+    projects: List[dict] = Field(default_factory=list)
 
 
 # ---------- Auth helpers ----------
@@ -629,9 +651,15 @@ async def build_ai_summary(context: dict) -> str:
         "## OVERALL SUMMARY\n\n"
         "Formatting rules:\n"
         "- Under each header write 2-6 tight bullet points prefixed with '- '.\n"
+        "- If MULTIPLE PROJECTS were worked on today (see 'Projects worked on today' section in input), "
+        "  GROUP the WORK COMPLETED section by project. For each project write a sub-line "
+        "  '- **Project N — <customer or code> — <address>**' followed by 1-3 indented bullet points of the "
+        "  actual work for that project (prefix indented bullets with '  - ').\n"
         "- Wrap CUSTOMER names, ADDRESSES, and PROJECT CODES in double-asterisk bold, e.g. **John Doe**, **123 Main St**, **P-1042**.\n"
         "- If a priority flag reason was provided, echo it verbatim in DELAY / CONSTRAINTS on its own bullet "
         "prefixed with '[URGENT: <flag type>]' so it can be highlighted red in the app.\n"
+        "- If any project has priority_flag='Touch-Ups' or touch_up=true, add a bullet in DELAY / CONSTRAINTS "
+        "prefixed with '[TOUCH-UP: <address>]' so the owner sees pending touch-ups.\n"
         "- OVERALL SUMMARY is 2-3 concise sentences the owner can read in 10 seconds. No fluff.\n"
         "- Never invent facts. If a section has no info, write '- None reported today.'\n"
     )
@@ -647,7 +675,7 @@ async def build_ai_summary(context: dict) -> str:
             else:
                 prompt_lines.append(f"- {f.get('type')}")
     if context.get("project_name") or context.get("project_code"):
-        prompt_lines.append(f"Project: {context.get('project_name') or ''} {context.get('project_code') or ''}")
+        prompt_lines.append(f"Primary Project: {context.get('project_name') or ''} {context.get('project_code') or ''}")
     prompt_lines.append(f"Date: {context.get('report_date')}")
     if context.get("weather"):
         w = context["weather"]
@@ -655,6 +683,26 @@ async def build_ai_summary(context: dict) -> str:
             f"Weather at site: {w.get('conditions')}, {w.get('temperature_f')}°F, wind {w.get('wind_mph')} mph, "
             f"precipitation {w.get('precipitation')} in."
         )
+    # NEW: projects list
+    if context.get("projects"):
+        prompt_lines.append("Projects worked on today:")
+        for idx, p in enumerate(context["projects"], start=1):
+            code = p.get("project_code") or "no code"
+            addr = p.get("address") or "no address"
+            cust = p.get("customer_name") or "Unknown customer"
+            times = ""
+            if p.get("start_time") or p.get("end_time"):
+                times = f" ({p.get('start_time') or '?'} → {p.get('end_time') or 'ongoing'})"
+            head = f"- Project {idx}: {cust} at {addr} [{code}]{times}"
+            prompt_lines.append(head)
+            if p.get("notes"):
+                prompt_lines.append(f"  · Work notes: {p['notes']}")
+            if p.get("materials_used"):
+                prompt_lines.append(f"  · Materials used: {p['materials_used']}")
+            if p.get("priority_flag") or p.get("touch_up"):
+                flag = p.get("priority_flag") or ("Touch-Ups" if p.get("touch_up") else "")
+                if flag:
+                    prompt_lines.append(f"  · Flag: {flag}")
     if context.get("highlights"):
         prompt_lines.append(f"Manager highlights: {context['highlights']}")
     if context.get("delays"):
@@ -664,7 +712,7 @@ async def build_ai_summary(context: dict) -> str:
     if context.get("material_notes"):
         prompt_lines.append(f"Material notes: {context['material_notes']}")
     if context.get("visits"):
-        prompt_lines.append("Site visits today:")
+        prompt_lines.append("Site visits today (raw GPS log):")
         for v in context["visits"]:
             addr = v.get("address") or f"({v.get('latitude')}, {v.get('longitude')})"
             code = v.get("project_code") or "no code"
@@ -709,6 +757,46 @@ async def build_ai_summary(context: dict) -> str:
             "## OVERALL SUMMARY\n"
             f"- {context.get('highlights') or 'No summary available.'}\n"
         )
+
+
+def _derive_projects_from_visits(visits: List[dict]) -> List[dict]:
+    """Auto-migrate legacy visits into project entries.
+    Groups visits by project_id when set; otherwise each visit becomes its own project.
+    """
+    projects: List[dict] = []
+    by_pid: dict[str, dict] = {}
+    for v in visits:
+        pid = v.get("project_id")
+        base = {
+            "id": pid or str(uuid4()),
+            "project_code": v.get("project_code"),
+            "project_name": None,
+            "customer_name": v.get("customer_name"),
+            "address": v.get("address"),
+            "latitude": v.get("latitude"),
+            "longitude": v.get("longitude"),
+            "notes": v.get("notes"),
+            "materials_used": None,
+            "start_time": v.get("timestamp"),
+            "end_time": v.get("ended_at"),
+            "priority_flag": None,
+            "touch_up": False,
+            "photos": list(v.get("photos", [])),
+            "visit_ids": [v.get("id")] if v.get("id") else [],
+        }
+        if pid and pid in by_pid:
+            # merge additional visit into the same project
+            existing = by_pid[pid]
+            existing["visit_ids"].append(v.get("id"))
+            existing["photos"].extend(v.get("photos", []))
+            if v.get("notes"):
+                existing["notes"] = (existing.get("notes") or "") + ("\n" if existing.get("notes") else "") + v["notes"]
+        elif pid:
+            by_pid[pid] = base
+            projects.append(base)
+        else:
+            projects.append(base)
+    return projects
 
 
 @api.post("/reports", response_model=DailyReport)
@@ -756,6 +844,15 @@ async def create_report(data: ReportCreate, request: Request, user: dict = Depen
         except Exception as e:
             logger.warning(f"Weather for report failed: {e}")
 
+    # Merge user-supplied projects with any derived from visits
+    user_projects = [p.model_dump() for p in (data.projects or [])]
+    if user_projects:
+        # trust user-provided list as authoritative
+        final_projects = user_projects
+    else:
+        # backward compat: derive one project per visit / group by project_id
+        final_projects = _derive_projects_from_visits(visits)
+
     ai_context = {
         "author_name": user["name"],
         "author_role": user["role"],
@@ -772,6 +869,7 @@ async def create_report(data: ReportCreate, request: Request, user: dict = Depen
         "weather": weather,
         "priority_level": data.priority_level,
         "priority_flags": data.priority_flags,
+        "projects": final_projects,
     }
     ai_summary = await build_ai_summary(ai_context)
 
@@ -796,6 +894,7 @@ async def create_report(data: ReportCreate, request: Request, user: dict = Depen
         "created_at": datetime.now(timezone.utc).isoformat(),
         "priority_level": data.priority_level,
         "priority_flags": data.priority_flags,
+        "projects": final_projects,
     }
     await request.app.db.reports.insert_one(report.copy())
     report.pop("_id", None)
@@ -943,6 +1042,10 @@ async def list_reports(request: Request, user: dict = Depends(current_user), inc
     if not include_archived:
         query["$or"] = [{"archived": False}, {"archived": {"$exists": False}}]
     docs = await request.app.db.reports.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    # Backward compat: if a legacy report has no `projects`, derive from visits on the fly
+    for d in docs:
+        if not d.get("projects"):
+            d["projects"] = _derive_projects_from_visits(d.get("visits", []))
     return [DailyReport(**d) for d in docs]
 
 
@@ -954,6 +1057,8 @@ async def get_report(report_id: str, request: Request, user: dict = Depends(curr
     FULL_ROLES = {Role.OWNER.value, Role.OPERATIONS.value, Role.PROJECT_MANAGER.value}
     if user["role"] not in FULL_ROLES and not user.get("is_admin") and doc["user_id"] != user["id"]:
         raise HTTPException(403, "Not allowed")
+    if not doc.get("projects"):
+        doc["projects"] = _derive_projects_from_visits(doc.get("visits", []))
     return DailyReport(**doc)
 
 
@@ -1073,6 +1178,68 @@ async def delete_customer(customer_id: str, request: Request, _: dict = Depends(
     if result.deleted_count == 0:
         raise HTTPException(404, "Customer not found")
     return {"ok": True}
+
+
+@api.get("/customers/history")
+async def customer_history(name: str, request: Request, user: dict = Depends(current_user)):
+    """Aggregate all visits, reports, and photos for a given customer NAME.
+    Case-insensitive substring match on customer_name across visits and report projects.
+    Access: any authenticated user can look up (management + field crew alike).
+    """
+    if not name or not name.strip():
+        raise HTTPException(400, "customer name is required")
+    name_re = re.compile(re.escape(name.strip()), re.IGNORECASE)
+
+    # Customer directory record (best-effort match)
+    customer = await request.app.db.customers.find_one({"name": name_re}, {"_id": 0})
+
+    # All visits ever logged for this customer
+    visits = await request.app.db.visits.find(
+        {"customer_name": name_re}, {"_id": 0}
+    ).sort("timestamp", -1).to_list(500)
+
+    # All reports whose projects OR visits contain this customer
+    report_docs = await request.app.db.reports.find(
+        {
+            "deleted_at": None,
+            "$or": [
+                {"visits.customer_name": name_re},
+                {"projects.customer_name": name_re},
+            ],
+        },
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(500)
+
+    reports_summary = [
+        {
+            "id": r["id"],
+            "report_date": r["report_date"],
+            "author_name": r.get("author_name"),
+            "author_role": r.get("author_role"),
+            "priority_level": r.get("priority_level"),
+            "created_at": r.get("created_at"),
+        }
+        for r in report_docs
+    ]
+
+    # Photos from visits (may duplicate; frontend can de-dupe)
+    photos = []
+    for v in visits:
+        for p in v.get("photos", []):
+            photos.append({"path": p, "visit_id": v.get("id"), "timestamp": v.get("timestamp")})
+
+    return {
+        "customer": customer,
+        "name": name,
+        "visits": visits,
+        "reports": reports_summary,
+        "photos": photos,
+        "counts": {
+            "visits": len(visits),
+            "reports": len(reports_summary),
+            "photos": len(photos),
+        },
+    }
 
 
 # ---------- Weekly Digest ----------

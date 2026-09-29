@@ -18,6 +18,7 @@ export const PRIORITY_FLAGS: PriorityFlagDef[] = [
   { type: "Missing Project Details", requiresReason: false },
   { type: "Delay of Payment", requiresReason: true },
   { type: "Wrong Materials", requiresReason: false },
+  { type: "Touch-Ups", requiresReason: false },
 ];
 
 export function flagRequiresReason(type: string): boolean {

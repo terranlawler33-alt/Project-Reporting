@@ -115,41 +115,90 @@ backend:
     priority: "high"
     needs_retesting: false
     status_history:
-        - working: "NA"
-          agent: "main"
-          comment: |
-            User reported HTTP 502 on Read Aloud. Root cause: ElevenLabs quota exhausted
-            (1,775 credits left, request needed 1,895–1,996). Old code labelled it "API key
-            invalid" (wrong message). Fix:
-            1. Added Emergent-managed OpenAI TTS fallback (`OpenAITextToSpeech`, model tts-1,
-               voice onyx). If ElevenLabs fails or is unconfigured, automatically fall back.
-            2. Strip markdown marks (*, _, #, `, urls) before TTS so voice does not read them.
-            3. Response now returns `voice_provider` ("elevenlabs" or "openai") for
-               transparency; cache stores it too.
-            4. Better error message when both providers fail.
-            Endpoint: POST /api/reports/{report_id}/tts
-            Verified logs show ElevenLabs 401 → OpenAI TTS success on live request.
         - working: true
           agent: "testing"
           comment: |
-            Iteration 7 — 11/11 pytest tests PASS. Confirmed:
-              - ElevenLabs 401 (quota) → OpenAI TTS fallback → 200 with voice_provider="openai"
-              - 2nd call returns cached=true with same URL
-              - 400 for empty summary, 404 for missing report
-              - RBAC: non-author non-full-role → 403; author/admin → 200
-              - Regression: GET/POST reports, regenerate-summary all healthy (regen
-                invalidates tts_cache correctly)
-            Report: /app/test_reports/iteration_7.json
+            Iteration 7 — 11/11 pytest tests PASS. Fully verified.
+
+  - task: "Multi-Project reports + backward compat + Touch-Ups flag + customer history"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "See earlier entry."
+        - working: true
+          agent: "testing"
+          comment: |
+            Iteration 8 — 15/15 pytest tests PASS. Verified: visits accept project_id;
+            reports accept projects with all fields (round-trip + AI summary refs);
+            backward-compat auto-derives projects from legacy visits on GET; customer
+            history endpoint returns visits/reports/customer/photos/counts, case-insensitive
+            match, 400 on empty name, 401 unauth. Touch-Ups flag persists + AI summary
+            contains "TOUCH-UP" marker. Regression: TTS (200 via openai fallback),
+            regenerate-summary, /customers all unchanged. No blockers. Report:
+            /app/test_reports/iteration_8.json.
+
+frontend:
+  - task: "Compose Report — Projects section with Add Another Project"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/report/new.tsx, /app/frontend/src/components/ProjectsSection.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            NEW. `<ProjectsSection>` component inserted immediately after Material Notes
+            input in the Compose Report screen. Auto-populates from today's visits on
+            mount (grouped by project_id). Each project card has: customer name,
+            address (matches pin drop location), project code+name, start/end time,
+            work notes, materials used, Touch-Ups toggle, and a horizontal
+            flag-picker chip strip. "+ Add another Project" button at the bottom
+            appends an empty card. Payload sent as `projects: []` in POST /reports.
+            Also added "Touch-Ups" to PRIORITY_FLAGS in priority.ts.
+
+  - task: "Map — Attach-to-Project modal on pin drop + Pin-tap detail sheet + Customer history navigation"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(tabs)/map.tsx, /app/frontend/app/customer/[name].tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            NEW. Two new modals on Map screen:
+            1. Save Visit → if today already has 1+ projects, shows a bottom-sheet modal
+               asking which project to attach this pin to (list existing + "Start a new
+               project" button). If no projects yet today, the visit is saved as a new
+               project directly. The chosen `project_id` is passed to POST /visits.
+               When attaching to an existing project, the visit inherits customer /
+               address / project_code from that project (unless the form has values).
+            2. Pin tap on the map opens a detail sheet showing address, project code,
+               time in/out, notes, photos, plus a "See customer history →" button
+               that navigates to `/customer/<name>`.
+            NEW screen `/app/frontend/app/customer/[name].tsx` — fetches
+            `GET /api/customers/history?name=` and shows stats (visits/reports/photos),
+            directory contact info, list of visits, tappable list of reports mentioning
+            this customer, and photo grid.
 
 metadata:
   created_by: "main_agent"
-  version: "1.1"
-  test_sequence: 7
+  version: "1.2"
+  test_sequence: 8
   run_ui: false
 
 test_plan:
   current_focus:
-    - "Read Aloud (TTS) — ElevenLabs with OpenAI fallback"
+    - "Multi-Project reports + backward compat + Touch-Ups flag + customer history"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -157,15 +206,21 @@ test_plan:
 agent_communication:
     - agent: "main"
       message: |
-        Bug fix: TTS endpoint POST /api/reports/{id}/tts was returning 502 because
-        ElevenLabs quota is exhausted. Added transparent OpenAI TTS fallback via
-        emergentintegrations.OpenAITextToSpeech(EMERGENT_LLM_KEY). Please test:
-        1. Login as admin@paintops.com / Admin@12345
-        2. Fetch existing reports via GET /api/reports (or create a new one)
-        3. Call POST /api/reports/{id}/tts on a report that has an ai_summary
-        4. Verify response is 200 with audio_data_url starting "data:audio/mpeg;base64,"
-           and voice_provider field is either "elevenlabs" or "openai"
-        5. Call it a second time on same report — expect cached=true
-        6. Verify the endpoint returns 400 if report has no ai_summary
-        7. Verify RBAC: non-author non-full-role user gets 403
-        Do NOT test frontend UI — backend only.
+        NEW FEATURE (iteration 8): Multi-project reports + Touch-Ups flag + customer history.
+        Backend test focus:
+        1. POST /api/visits accepts optional `project_id` and stores it.
+        2. POST /api/reports accepts `projects: List[ProjectEntry]` — verify one saved
+           and returned back, and that AI summary references projects (bullet under
+           WORK COMPLETED should include "Project 1" or the customer/address).
+        3. GET /api/reports (and single GET) — legacy reports (no projects field) get
+           auto-derived projects from visits; new reports keep their explicit projects.
+        4. GET /api/customers/history?name=<name> — returns visits, reports, photos,
+           customer record. Case-insensitive match. 400 if name empty.
+        5. Touch-Ups flag: send a report with priority_flags=[{type:"Touch-Ups"}] and
+           a project with touch_up=true — AI summary should mention [TOUCH-UP: address]
+           (best-effort — LLM may vary; check the presence of "TOUCH-UP" token OR the
+           bullet under DELAY / CONSTRAINTS).
+        6. Regression: TTS endpoint, GET /reports basic list, existing visit creation.
+        Do NOT test frontend UI in this iteration (backend only for now).
+        Credentials: admin@paintops.com / Admin@12345.
+
