@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, Fragment } from "react";
 import {
   View,
   Text,
@@ -202,17 +202,16 @@ export function HourlyForecastSheet({
                   {points.map((p, i) => {
                     const cx = xFor(i);
                     const cy = yForTemp(p.temperature_f ?? minT);
+                    const prob = p.precip_prob ?? 0;
                     return (
-                      <>
+                      <Fragment key={`pt-${i}`}>
                         <Circle
-                          key={`c-${i}`}
                           cx={cx}
                           cy={cy}
                           r={3.5}
                           fill={colors.brandPrimary}
                         />
                         <SvgText
-                          key={`t-${i}`}
                           x={cx}
                           y={cy - 8}
                           fill={colors.onSurface}
@@ -223,22 +222,20 @@ export function HourlyForecastSheet({
                           {p.temperature_f != null ? `${Math.round(p.temperature_f)}°` : ""}
                         </SvgText>
                         {/* Rain % label above bar */}
-                        {(p.precip_prob ?? 0) > 0 ? (
+                        {prob > 0 ? (
                           <SvgText
-                            key={`r-${i}`}
                             x={cx}
-                            y={barBottomY - ((barMaxHeight * (p.precip_prob ?? 0)) / 100) - 4}
+                            y={barBottomY - (barMaxHeight * prob) / 100 - 4}
                             fill="#3B82F6"
                             fontSize={9}
                             fontWeight="700"
                             textAnchor="middle"
                           >
-                            {Math.round(p.precip_prob ?? 0)}%
+                            {Math.round(prob)}%
                           </SvgText>
                         ) : null}
                         {/* Hour label */}
                         <SvgText
-                          key={`h-${i}`}
                           x={cx}
                           y={chartHeight - 12}
                           fill={colors.muted}
@@ -248,7 +245,7 @@ export function HourlyForecastSheet({
                         >
                           {p.hour_label}
                         </SvgText>
-                      </>
+                      </Fragment>
                     );
                   })}
                 </Svg>
