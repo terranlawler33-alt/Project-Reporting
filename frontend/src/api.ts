@@ -175,4 +175,22 @@ export const api = {
     }>(`/weather/hourly?lat=${lat}&lon=${lon}&hours=${hours}`),
   refreshVisitWeather: (visit_id: string) =>
     apiRequest<any>(`/visits/${visit_id}/refresh-weather`, { method: "POST" }),
+  patchVisit: (
+    visit_id: string,
+    patch: {
+      customer_name?: string | null;
+      address?: string | null;
+      project_code?: string | null;
+      notes?: string | null;
+    },
+  ) =>
+    apiRequest<any>(`/visits/${visit_id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  deleteVisit: (visit_id: string) =>
+    apiRequest<{ ok: boolean }>(`/visits/${visit_id}`, { method: "DELETE" }),
+  toggleBookmark: (visit_id: string) =>
+    apiRequest<any>(`/visits/${visit_id}/bookmark`, { method: "POST" }),
+  listBookmarks: () => apiRequest<any[]>("/visits/bookmarked"),
 };

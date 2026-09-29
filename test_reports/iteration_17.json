@@ -1,0 +1,34 @@
+{
+  "summary": "Iteration 17 backend + light frontend verification. 9/9 pytest cases pass (bookmark toggle+list, PATCH updates/clears/404/partial-preservation, DELETE+404+/visits/today removal, RBAC Production=403 & Admin=200 across all three ops, regression: auto-weather on create, /visits/{id}/end, /reports projects[].weather key, /reports/{id}/tts voice_provider). Frontend: long-press on Map visit card opens visit-context-menu with ctx-edit / ctx-bookmark / ctx-delete; tapping ctx-bookmark makes bookmark-strip visible with 1 bookmark-chip and shows bookmark icon on the card.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration17_visit_ops.py",
+    "/app/test_reports/pytest/pytest_iteration17.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 2247 lines — approaching maintainability limit; consider splitting visits/reports/tts into routers.",
+    "PATCH visit logic (server.py:785-789) first builds updates from non-None values, then overrides with None when v == ''. This works but is a two-pass loop; a single pass would be cleaner."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration17_visit_ops.py"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "100%"
+  },
+  "seed_data_creation": "Tests create+delete TEST_-prefixed visits per test; one temp Production user (test_prod_<uuid>@paintops.com) is created and deleted; two temporary reports are created for regression checks (one is auto-cleaned, the tts one is deleted post-test).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Auth login response uses access_token (not token). Fixture in test_iteration17_visit_ops.py handles both. bookmark-strip only renders when bookmarks.length > 0. Deleting a visit is done via context-menu → Delete which shows Alert.alert (not tested in UI, backend covered). Report was seeded to enable non-skipping TTS + projects[].weather regression checks.",
+  "rca_of_issue": "n/a — all checks pass."
+}

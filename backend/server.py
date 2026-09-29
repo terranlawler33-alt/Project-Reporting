@@ -124,6 +124,14 @@ class LocationVisit(LocationVisitCreate):
     photos: List[str] = []
     weather: Optional[dict] = None  # snapshot fetched at check-in time
     weather_refreshed_at: Optional[str] = None
+    bookmarked: bool = False  # marks recurring locations for quick re-log
+
+
+class LocationVisitPatch(BaseModel):
+    customer_name: Optional[str] = None
+    address: Optional[str] = None
+    project_code: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class BreakCreate(BaseModel):
@@ -723,6 +731,77 @@ async def end_visit(visit_id: str, request: Request, user: dict = Depends(curren
     )
     if result.matched_count == 0:
         raise HTTPException(404, "Visit not found")
+    return {"ok": True}
+
+
+def _can_modify_visit(doc: dict, user: dict) -> bool:
+    if doc.get("user_id") == user["id"]:
+        return True
+    if user.get("is_admin"):
+        return True
+    FULL_ROLES = {Role.OWNER.value, Role.OPERATIONS.value, Role.PROJECT_MANAGER.value}
+    return user.get("role") in FULL_ROLES
+
+
+@api.get("/visits/bookmarked", response_model=List[LocationVisit])
+async def list_bookmarked_visits(request: Request, user: dict = Depends(current_user)):
+    """All bookmarked visits for the current user (recurring locations).
+    Sorted by most-recently-visited so the top hits are always current.
+    """
+    docs = await request.app.db.visits.find(
+        {"user_id": user["id"], "bookmarked": True},
+        {"_id": 0},
+    ).sort("timestamp", -1).to_list(200)
+    return [LocationVisit(**d) for d in docs]
+
+
+@api.post("/visits/{visit_id}/bookmark", response_model=LocationVisit)
+async def toggle_bookmark(visit_id: str, request: Request, user: dict = Depends(current_user)):
+    doc = await request.app.db.visits.find_one({"id": visit_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Visit not found")
+    if not _can_modify_visit(doc, user):
+        raise HTTPException(403, "Not allowed")
+    new_val = not bool(doc.get("bookmarked", False))
+    await request.app.db.visits.update_one(
+        {"id": visit_id}, {"$set": {"bookmarked": new_val}}
+    )
+    doc["bookmarked"] = new_val
+    return LocationVisit(**doc)
+
+
+@api.patch("/visits/{visit_id}", response_model=LocationVisit)
+async def patch_visit(
+    visit_id: str,
+    data: LocationVisitPatch,
+    request: Request,
+    user: dict = Depends(current_user),
+):
+    doc = await request.app.db.visits.find_one({"id": visit_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Visit not found")
+    if not _can_modify_visit(doc, user):
+        raise HTTPException(403, "Not allowed")
+    updates = {k: v for k, v in data.model_dump(exclude_unset=True).items() if v is not None}
+    # Allow explicit empty strings from the client to CLEAR fields
+    for k, v in data.model_dump(exclude_unset=True).items():
+        if v == "":
+            updates[k] = None
+    if not updates:
+        return LocationVisit(**doc)
+    await request.app.db.visits.update_one({"id": visit_id}, {"$set": updates})
+    doc.update(updates)
+    return LocationVisit(**doc)
+
+
+@api.delete("/visits/{visit_id}")
+async def delete_visit(visit_id: str, request: Request, user: dict = Depends(current_user)):
+    doc = await request.app.db.visits.find_one({"id": visit_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Visit not found")
+    if not _can_modify_visit(doc, user):
+        raise HTTPException(403, "Not allowed")
+    await request.app.db.visits.delete_one({"id": visit_id})
     return {"ok": True}
 
 

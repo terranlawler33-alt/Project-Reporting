@@ -39,6 +39,16 @@ export default function MapScreen() {
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [selectedVisit, setSelectedVisit] = useState<any | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [contextVisit, setContextVisit] = useState<any | null>(null);
+  const [editingVisit, setEditingVisit] = useState<any | null>(null);
+  const [editForm, setEditForm] = useState({
+    customer_name: "",
+    address: "",
+    project_code: "",
+    notes: "",
+  });
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [bookmarks, setBookmarks] = useState<any[]>([]);
   const [form, setForm] = useState({
     latitude: "",
     longitude: "",
@@ -101,12 +111,102 @@ export default function MapScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [v, c] = await Promise.all([api.visitsToday(), api.listCustomers().catch(() => [])]);
+      const [v, c, b] = await Promise.all([
+        api.visitsToday(),
+        api.listCustomers().catch(() => []),
+        api.listBookmarks().catch(() => []),
+      ]);
       setVisits(v);
       setCustomers(c);
+      setBookmarks(b || []);
     } catch {}
     setLoading(false);
   }, []);
+
+  const openContextMenu = (v: any) => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+    setContextVisit(v);
+  };
+
+  const beginEdit = (v: any) => {
+    setEditForm({
+      customer_name: v.customer_name || "",
+      address: v.address || "",
+      project_code: v.project_code || "",
+      notes: v.notes || "",
+    });
+    setEditingVisit(v);
+    setContextVisit(null);
+  };
+
+  const commitEdit = async () => {
+    if (!editingVisit) return;
+    setSavingEdit(true);
+    try {
+      await api.patchVisit(editingVisit.id, {
+        customer_name: editForm.customer_name || "",
+        address: editForm.address || "",
+        project_code: editForm.project_code || "",
+        notes: editForm.notes || "",
+      });
+      setEditingVisit(null);
+      await load();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    } catch (e: any) {
+      Alert.alert("Update failed", e?.message || "Please try again");
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const deleteVisit = (v: any) => {
+    setContextVisit(null);
+    Alert.alert(
+      "Delete visit?",
+      `Remove the pin at ${v.address || v.customer_name || "this location"}? This cannot be undone.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await api.deleteVisit(v.id);
+              await load();
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+            } catch (e: any) {
+              Alert.alert("Delete failed", e?.message || "Please try again");
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const toggleBookmark = async (v: any) => {
+    setContextVisit(null);
+    try {
+      await api.toggleBookmark(v.id);
+      await load();
+      Haptics.selectionAsync().catch(() => {});
+    } catch (e: any) {
+      Alert.alert("Bookmark failed", e?.message || "Please try again");
+    }
+  };
+
+  // Prefill the new-visit form from a bookmark so user can quickly log a recurring stop
+  const startVisitFromBookmark = (b: any) => {
+    setForm({
+      latitude: String(b.latitude),
+      longitude: String(b.longitude),
+      customer_name: b.customer_name || "",
+      address: b.address || "",
+      project_code: b.project_code || "",
+      notes: "",
+    });
+    setPendingPhotos([]);
+    setShowForm(true);
+  };
 
   useEffect(() => {
     load();
@@ -479,6 +579,45 @@ export default function MapScreen() {
           </View>
         )}
 
+        {bookmarks.length > 0 && (
+          <View style={styles.bookmarkStrip} testID="bookmark-strip">
+            <View style={styles.bookmarkHeader}>
+              <Ionicons name="bookmark" size={14} color={colors.warning} />
+              <Text style={styles.bookmarkTitle}>Recurring locations</Text>
+              <Text style={styles.bookmarkCount}>{bookmarks.length}</Text>
+            </View>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: spacing.sm, paddingRight: spacing.md }}
+            >
+              {bookmarks.map((b) => (
+                <Pressable
+                  key={b.id}
+                  testID={`bookmark-chip-${b.id}`}
+                  onPress={() => startVisitFromBookmark(b)}
+                  style={styles.bookmarkChip}
+                >
+                  <Ionicons name="location" size={14} color={colors.onWarning} />
+                  <View style={{ maxWidth: 160 }}>
+                    <Text style={styles.bookmarkChipTitle} numberOfLines={1}>
+                      {b.customer_name || "Job Site"}
+                    </Text>
+                    {b.address ? (
+                      <Text style={styles.bookmarkChipSub} numberOfLines={1}>
+                        {b.address}
+                      </Text>
+                    ) : null}
+                  </View>
+                </Pressable>
+              ))}
+            </ScrollView>
+            <Text style={styles.bookmarkHint}>
+              Tap a chip to start a new visit here — GPS, customer & address auto-filled.
+            </Text>
+          </View>
+        )}
+
         {loading ? (
           <ActivityIndicator color={colors.brandPrimary} />
         ) : visits.length === 0 ? (
@@ -496,6 +635,8 @@ export default function MapScreen() {
                 Haptics.selectionAsync().catch(() => {});
                 setSelectedVisit(v);
               }}
+              onLongPress={() => openContextMenu(v)}
+              delayLongPress={350}
               style={({ pressed }) => [
                 styles.visitCard,
                 pressed && { opacity: 0.75 },
@@ -505,10 +646,20 @@ export default function MapScreen() {
                 <Ionicons name="location" size={18} color={colors.onBrandPrimary} />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.visitTitle}>
-                  {v.customer_name || "Job Site"}
-                  {v.project_code ? ` · ${v.project_code}` : ""}
-                </Text>
+                <View style={styles.visitTitleRow}>
+                  <Text style={styles.visitTitle} numberOfLines={1}>
+                    {v.customer_name || "Job Site"}
+                    {v.project_code ? ` · ${v.project_code}` : ""}
+                  </Text>
+                  {v.bookmarked ? (
+                    <Ionicons
+                      name="bookmark"
+                      size={13}
+                      color={colors.warning}
+                      testID={`visit-bookmark-${v.id}`}
+                    />
+                  ) : null}
+                </View>
                 <Text style={styles.visitCoord}>
                   {v.address || `${v.latitude.toFixed(5)}, ${v.longitude.toFixed(5)}`}
                 </Text>
@@ -719,6 +870,137 @@ export default function MapScreen() {
                 )}
               </ScrollView>
             ) : null}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Long-press context menu — Edit / Bookmark / Delete */}
+      <Modal
+        visible={!!contextVisit}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setContextVisit(null)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setContextVisit(null)}>
+          <View style={styles.ctxSheet} testID="visit-context-menu">
+            {contextVisit ? (
+              <>
+                <Text style={styles.ctxTitle} numberOfLines={1}>
+                  {contextVisit.customer_name || "Job Site"}
+                </Text>
+                <Text style={styles.ctxSub} numberOfLines={1}>
+                  {contextVisit.address ||
+                    `${contextVisit.latitude.toFixed(4)}, ${contextVisit.longitude.toFixed(4)}`}
+                </Text>
+                <Pressable
+                  testID="ctx-edit"
+                  onPress={() => beginEdit(contextVisit)}
+                  style={styles.ctxItem}
+                >
+                  <Ionicons name="create-outline" size={20} color={colors.brandPrimary} />
+                  <Text style={styles.ctxItemText}>Edit details</Text>
+                </Pressable>
+                <Pressable
+                  testID="ctx-bookmark"
+                  onPress={() => toggleBookmark(contextVisit)}
+                  style={styles.ctxItem}
+                >
+                  <Ionicons
+                    name={contextVisit.bookmarked ? "bookmark" : "bookmark-outline"}
+                    size={20}
+                    color={colors.warning}
+                  />
+                  <Text style={styles.ctxItemText}>
+                    {contextVisit.bookmarked ? "Remove bookmark" : "Bookmark as recurring"}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  testID="ctx-delete"
+                  onPress={() => deleteVisit(contextVisit)}
+                  style={styles.ctxItem}
+                >
+                  <Ionicons name="trash-outline" size={20} color={colors.error} />
+                  <Text style={[styles.ctxItemText, { color: colors.error }]}>Delete visit</Text>
+                </Pressable>
+                <Pressable
+                  testID="ctx-close"
+                  onPress={() => setContextVisit(null)}
+                  style={styles.ctxCancel}
+                >
+                  <Text style={styles.ctxCancelText}>Cancel</Text>
+                </Pressable>
+              </>
+            ) : null}
+          </View>
+        </Pressable>
+      </Modal>
+
+      {/* Edit visit modal */}
+      <Modal
+        visible={!!editingVisit}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setEditingVisit(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Edit visit</Text>
+              <Pressable onPress={() => setEditingVisit(null)} testID="edit-close">
+                <Ionicons name="close" size={22} color={colors.onSurface} />
+              </Pressable>
+            </View>
+            <ScrollView>
+              <Text style={styles.label}>Customer name</Text>
+              <TextInput
+                testID="edit-customer-name"
+                value={editForm.customer_name}
+                onChangeText={(t) => setEditForm((f) => ({ ...f, customer_name: t }))}
+                style={styles.input}
+                placeholder="John Doe"
+                placeholderTextColor={colors.muted}
+              />
+              <Text style={styles.label}>Address</Text>
+              <TextInput
+                testID="edit-address"
+                value={editForm.address}
+                onChangeText={(t) => setEditForm((f) => ({ ...f, address: t }))}
+                style={styles.input}
+                placeholder="123 Main St"
+                placeholderTextColor={colors.muted}
+              />
+              <Text style={styles.label}>Project code</Text>
+              <TextInput
+                testID="edit-project-code"
+                value={editForm.project_code}
+                onChangeText={(t) => setEditForm((f) => ({ ...f, project_code: t }))}
+                style={styles.input}
+                placeholder="P-1042"
+                placeholderTextColor={colors.muted}
+              />
+              <Text style={styles.label}>Notes</Text>
+              <TextInput
+                testID="edit-notes"
+                value={editForm.notes}
+                onChangeText={(t) => setEditForm((f) => ({ ...f, notes: t }))}
+                style={[styles.input, { minHeight: 80, textAlignVertical: "top" }]}
+                placeholder="Tasks, crew, materials"
+                placeholderTextColor={colors.muted}
+                multiline
+              />
+              <Pressable
+                testID="edit-save"
+                onPress={commitEdit}
+                disabled={savingEdit}
+                style={[styles.primaryBtn, { marginTop: spacing.md }]}
+              >
+                {savingEdit ? (
+                  <ActivityIndicator color={colors.onBrandPrimary} />
+                ) : (
+                  <Text style={styles.primaryBtnText}>Save changes</Text>
+                )}
+              </Pressable>
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -1038,6 +1320,82 @@ const styles = StyleSheet.create({
   weatherHeaderText: { flex: 1, color: colors.onSurface, fontSize: 13, fontWeight: "700" },
   weatherSub: { color: colors.muted, fontSize: 12, marginTop: 4 },
   weatherStamp: { color: colors.muted, fontSize: 10, marginTop: 4, fontStyle: "italic" },
+  visitTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  bookmarkStrip: {
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  bookmarkHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginBottom: spacing.xs,
+  },
+  bookmarkTitle: {
+    color: colors.onSurface,
+    fontWeight: "800",
+    fontSize: 12,
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
+    flex: 1,
+  },
+  bookmarkCount: {
+    backgroundColor: colors.warning,
+    color: colors.onWarning,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: radius.pill,
+    fontSize: 10,
+    fontWeight: "800",
+    overflow: "hidden",
+  },
+  bookmarkChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: colors.warning,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+  },
+  bookmarkChipTitle: { color: colors.onWarning, fontWeight: "800", fontSize: 12 },
+  bookmarkChipSub: { color: colors.onWarning, fontSize: 10, opacity: 0.85 },
+  bookmarkHint: {
+    color: colors.muted,
+    fontSize: 10,
+    marginTop: spacing.xs,
+    fontStyle: "italic",
+  },
+  ctxSheet: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    marginHorizontal: spacing.lg,
+    padding: spacing.md,
+    minWidth: 260,
+  },
+  ctxTitle: { color: colors.onSurface, fontSize: 15, fontWeight: "800" },
+  ctxSub: { color: colors.muted, fontSize: 11, marginTop: 2, marginBottom: spacing.sm },
+  ctxItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingVertical: 12,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radius.md,
+  },
+  ctxItemText: { color: colors.onSurface, fontSize: 14, fontWeight: "600" },
+  ctxCancel: {
+    marginTop: spacing.xs,
+    paddingVertical: 10,
+    alignItems: "center",
+    backgroundColor: colors.surfaceTertiary,
+    borderRadius: radius.md,
+  },
+  ctxCancelText: { color: colors.onSurfaceTertiary, fontWeight: "700", fontSize: 13 },
 });
 
 function VisitPhoto({ path, testID }: { path: string; testID: string }) {
