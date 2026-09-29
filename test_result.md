@@ -152,28 +152,46 @@ backend:
     priority: "high"
     needs_retesting: false
     status_history:
+        - working: true
+          agent: "testing"
+          comment: "Iteration 10 — 18/18 pytest tests PASS."
+
+  - task: "Hourly forecast endpoint /api/weather/hourly"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
         - working: "NA"
           agent: "main"
           comment: "See earlier entry."
         - working: true
           agent: "testing"
           comment: |
-            Iteration 10 — 18/18 pytest tests PASS.
-            All weather features verified end-to-end against live Open-Meteo:
-            - POST /visits auto-attaches weather snapshot with numeric fields.
-            - POST /visits/{id}/refresh-weather: 200 fresh, 404 unknown, 403 non-author.
-            - GET /geocode: 200 with 1..8 results, 400 empty q, 401 no auth.
-            - GET /weather auth-gated correctly.
-            - Reports auto-derive projects with per-visit weather; ai_summary has
-              WEATHER IMPACT block. Explicit weather in projects roundtrips.
-            - Regression: parse-project/tts/customer-history/reports all green.
-            Report: /app/test_reports/iteration_10.json.
+            Iteration 11 — 10/10 pytest tests PASS. Verified schema (hour_label
+            regex, numeric fields, precip_prob 0..100), hours clamp (6→≤6, 99→≤24,
+            0→≥1), auth gating (403 no header). Regression /weather + /geocode +
+            /tts all healthy. Report: /app/test_reports/iteration_11.json.
 
 frontend:
   - task: "Home — Multi-Location Weather widget + Report per-site weather + Refresh from pin sheet"
     implemented: true
+    working: true
+    file: "multiple"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Verified via screenshot — Home widget + Boston search working."
+
+  - task: "Hourly Forecast Sheet — tap weather card → 12h chart + list"
+    implemented: true
     working: "NA"
-    file: "/app/frontend/src/components/MultiLocationWeather.tsx, /app/frontend/app/(tabs)/index.tsx, /app/frontend/app/(tabs)/map.tsx, /app/frontend/app/report/[id].tsx"
+    file: "/app/frontend/src/components/HourlyForecastSheet.tsx, /app/frontend/src/components/MultiLocationWeather.tsx"
     stuck_count: 0
     priority: "high"
     needs_retesting: true
@@ -181,28 +199,19 @@ frontend:
         - working: "NA"
           agent: "main"
           comment: |
-            NEW. `<MultiLocationWeather>` replaces the old fixed weather hero. Features:
-            - Always shows "Current location" (GPS) as the first card.
-            - + button opens a search modal that hits GET /api/geocode; tap a result
-              to save that location. Persisted per-device via AsyncStorage
-              (paintops.weather.locations.v1).
-            - ‹ › arrows and pagination dots to swipe between locations.
-            - Each card fetches its own snapshot from GET /api/weather.
-            - Remove (×) button on saved cards.
-            Report detail: new "Weather by site" MetaCard renders one row per project
-            that has a weather snapshot.
-            Map pin-tap sheet: shows the visit's captured weather + a refresh button
-            that hits POST /visits/{id}/refresh-weather and updates the sheet.
+            NEW. Tap any weather card on Home → bottom sheet with SVG temp curve +
+            rain-chance bars + hour labels + a scrollable compact list. Uses
+            react-native-svg. Screenshot-verified working with live Open-Meteo data.
 
 metadata:
   created_by: "main_agent"
-  version: "1.4"
-  test_sequence: 10
+  version: "1.5"
+  test_sequence: 11
   run_ui: false
 
 test_plan:
   current_focus:
-    - "Weather — geocoding, per-visit auto-fetch, refresh endpoint, projects carry weather to reports"
+    - "Hourly forecast endpoint /api/weather/hourly"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -210,24 +219,15 @@ test_plan:
 agent_communication:
     - agent: "main"
       message: |
-        Iteration 10 — Backend test focus:
-        1. POST /api/visits at valid coords → 200; response body has non-null
-           `weather` snapshot with temperature_f/wind_mph/precipitation/conditions and
-           `weather_refreshed_at` timestamp.
-        2. POST /api/visits/{visit_id}/refresh-weather on an existing visit → 200
-           with an updated weather snapshot and refreshed timestamp. 404 for unknown
-           id. 403 for a non-author, non-full-role user.
-        3. GET /api/geocode?q=Boston → 200 with `results` array (length up to 8),
-           each entry has label/latitude/longitude. Empty query → 400. Auth required
-           (401/403).
-        4. GET /api/weather now requires auth — hit without token → 401/403.
-        5. POST /api/reports with visits that have `weather` snapshots — backend
-           derived projects should carry `weather` through, and ai_summary should
-           mention weather at least once. Also submitting explicit `projects` with
-           `weather` inline should round-trip.
-        6. Regression: parse-project, TTS, customer history unchanged.
-        Do NOT test frontend UI.
-        Credentials: admin@paintops.com / Admin@12345.
-
-
-
+        Iteration 11 — Backend test focus: new GET /api/weather/hourly endpoint.
+        1. Happy path: lat=42.358&lon=-71.060 → 200; points length 1..12; each
+           point has hour_label (HH:MM), numeric temperature_f, numeric precip_prob
+           (0..100), numeric precipitation, string conditions, int weather_code,
+           numeric wind_mph.
+        2. hours=6 → response `hours` <= 6.
+        3. hours=99 clamped → response `hours` <= 24.
+        4. hours=0 clamped → at least 1 point (server enforces min 1).
+        5. Auth required — no token → 401/403.
+        6. Regression: /api/weather, /api/geocode still 200; /api/reports/{id}/tts
+           unchanged.
+        Credentials: admin@paintops.com / Admin@12345. Backend only.

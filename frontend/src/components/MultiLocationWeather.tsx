@@ -17,6 +17,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Image } from "expo-image";
 import { api } from "@/src/api";
 import { colors, spacing, radius } from "@/src/theme";
+import { HourlyForecastSheet } from "@/src/components/HourlyForecastSheet";
 
 const STORAGE_KEY = "paintops.weather.locations.v1";
 const HERO_IMG =
@@ -74,6 +75,7 @@ export function MultiLocationWeather({ greetingName, topPadding }: Props) {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [searching, setSearching] = useState(false);
   const [currentCoords, setCurrentCoords] = useState<{ lat: number; lon: number } | null>(null);
+  const [showHourly, setShowHourly] = useState(false);
 
   // Build the ordered list: Current GPS first (always present) + saved locations
   const locations: SavedLocation[] = [
@@ -236,7 +238,11 @@ export function MultiLocationWeather({ greetingName, topPadding }: Props) {
             <Ionicons name="chevron-back" size={22} color="#fff" />
           </Pressable>
 
-          <View style={styles.weatherBody} testID="weather-card">
+          <Pressable
+            testID="weather-card"
+            onPress={() => weather && setShowHourly(true)}
+            style={styles.weatherBody}
+          >
             <View style={styles.labelRow}>
               <Ionicons
                 name={active.is_current ? "locate" : "location"}
@@ -269,11 +275,15 @@ export function MultiLocationWeather({ greetingName, topPadding }: Props) {
                     {(weather.precipitation || 0).toFixed(2)} in
                   </Text>
                 </View>
+                <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.7)" />
               </View>
             ) : (
               <Text style={styles.cond}>Weather unavailable</Text>
             )}
-          </View>
+            {weather ? (
+              <Text style={styles.tapHint}>Tap for 12-hour forecast →</Text>
+            ) : null}
+          </Pressable>
 
           <Pressable
             testID="weather-next"
@@ -361,6 +371,23 @@ export function MultiLocationWeather({ greetingName, topPadding }: Props) {
           </View>
         </View>
       </Modal>
+
+      {/* Hourly forecast sheet — opens when a weather card is tapped */}
+      <HourlyForecastSheet
+        visible={showHourly}
+        onClose={() => setShowHourly(false)}
+        latitude={
+          active.is_current
+            ? currentCoords?.lat ?? weather?.latitude ?? null
+            : active.latitude
+        }
+        longitude={
+          active.is_current
+            ? currentCoords?.lon ?? weather?.longitude ?? null
+            : active.longitude
+        }
+        locationLabel={active.label}
+      />
     </View>
   );
 }
@@ -409,6 +436,12 @@ const styles = StyleSheet.create({
   temp: { color: "#fff", fontSize: 30, fontWeight: "800" },
   cond: { color: "#fff", fontSize: 14, fontWeight: "700" },
   sub: { color: "rgba(255,255,255,0.75)", fontSize: 11 },
+  tapHint: {
+    color: "rgba(255,255,255,0.65)",
+    fontSize: 10,
+    marginTop: 6,
+    fontStyle: "italic",
+  },
   dotsRow: {
     flexDirection: "row",
     justifyContent: "center",

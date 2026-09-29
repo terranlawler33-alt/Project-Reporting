@@ -1,0 +1,35 @@
+{
+  "summary": "Iteration 11 — GET /api/weather/hourly backend tests. Wrote /app/backend/tests/test_iteration11_hourly.py with 10 tests across 6 groups (TestPrep, TestHourlyHappyPath, TestHoursParam, TestHoursClampUpper, TestHoursClampLower, TestAuthRequired, TestRegression). Executed with pytest -n 0 (serial, per iter10 xdist note). Result: 10 passed / 0 failed / 0 skipped in ~14s against live Open-Meteo. Happy path validated: latitude/longitude echo, hours int, utc_offset_seconds int, fetched_at ISO string, points array of length 1..12 with hour_label matching ^\\d{2}:\\d{2}$, numeric temperature_f/precipitation/wind_mph, precip_prob in [0,100] or None, int weather_code, non-empty conditions. Confirmed hours=6 caps points<=6, hours=99 clamps to <=24, hours=0 clamps to >=1 (max(1,min(24,h)) enforced). Unauthenticated GET returns 403. Regression clean: /weather current, /geocode?q=Boston, and /reports/{id}/tts returned 200 with voice_provider=openai as expected (ElevenLabs quota still exhausted — expected behavior).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration11_hourly.py",
+    "/app/test_reports/pytest/pytest_iteration11.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:592 uses `datetime.utcnow()` which is deprecated in Python 3.12+. Prefer `datetime.now(timezone.utc).replace(tzinfo=None)` or timezone-aware arithmetic. Not a functional issue today.",
+    "server.py:560 clamps hours via `max(1, min(24, int(hours or 12)))` — negative hours (e.g., -5) become -5 -> max(1,-5)=1; behavior correct. Consider FastAPI Query(ge=1, le=24) for auto 422 on out-of-range if stricter API contract desired.",
+    "server.py:603 slice uses `start_idx + hours` but if Open-Meteo returns fewer future hours than requested (edge of forecast_days=2 window near midnight), the returned `hours` field will silently be less than requested. Tests handle this (points 1..12 inclusive) but consumers should be aware."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration11_hourly.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "seed_data_creation": "Created one seed report via POST /reports (highlights='TEST iter11 regression tts.') to exercise /reports/{id}/tts. No other seed data added.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "GET /api/weather/hourly is stable and fully covered. If adding more tests to this file, keep the module-scoped `state` fixture and continue running with `-n 0` (pytest.ini forces `-n 2 --dist loadscope`, which does not share module-scoped fixtures across classes on different workers). TestRegression re-authenticates defensively in case of future parallelism changes.",
+  "rca_of_issue": "N/A — no bugs found."
+}

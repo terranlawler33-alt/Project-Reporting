@@ -547,6 +547,83 @@ async def get_weather(lat: float, lon: float, _: dict = Depends(current_user)):
     return snapshot
 
 
+@api.get("/weather/hourly")
+async def get_weather_hourly(
+    lat: float,
+    lon: float,
+    hours: int = 12,
+    _: dict = Depends(current_user),
+):
+    """Return the next N hourly forecast points (default 12) from Open-Meteo.
+    Each entry: {time, temperature_f, precip_prob, precipitation, wind_mph, weather_code, conditions}.
+    """
+    hours = max(1, min(24, int(hours or 12)))
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": lat,
+                    "longitude": lon,
+                    "hourly": "temperature_2m,precipitation_probability,precipitation,weather_code,wind_speed_10m",
+                    "temperature_unit": "fahrenheit",
+                    "wind_speed_unit": "mph",
+                    "precipitation_unit": "inch",
+                    "timezone": "auto",
+                    "forecast_days": 2,
+                },
+            )
+        resp.raise_for_status()
+        j = resp.json()
+    except Exception as e:
+        logger.warning(f"Hourly weather failed for {lat},{lon}: {e}")
+        raise HTTPException(502, "Failed to fetch hourly weather")
+
+    hourly = j.get("hourly", {}) or {}
+    times = hourly.get("time") or []
+    temps = hourly.get("temperature_2m") or []
+    probs = hourly.get("precipitation_probability") or []
+    precs = hourly.get("precipitation") or []
+    codes = hourly.get("weather_code") or []
+    winds = hourly.get("wind_speed_10m") or []
+    tz_offset = j.get("utc_offset_seconds", 0) or 0
+
+    # Find the first index at or after "now" in the local timezone reported by the API
+    now_local = datetime.utcnow() + timedelta(seconds=tz_offset)
+    start_idx = 0
+    for i, t in enumerate(times):
+        try:
+            ts = datetime.strptime(t, "%Y-%m-%dT%H:%M")
+        except Exception:
+            continue
+        if ts >= now_local:
+            start_idx = i
+            break
+
+    end_idx = min(len(times), start_idx + hours)
+    points = []
+    for i in range(start_idx, end_idx):
+        code = codes[i] if i < len(codes) else None
+        points.append({
+            "time": times[i] if i < len(times) else None,
+            "hour_label": (times[i][11:16] if i < len(times) and len(times[i]) >= 16 else ""),
+            "temperature_f": temps[i] if i < len(temps) else None,
+            "precip_prob": probs[i] if i < len(probs) else None,
+            "precipitation": precs[i] if i < len(precs) else None,
+            "wind_mph": winds[i] if i < len(winds) else None,
+            "weather_code": code,
+            "conditions": WEATHER_CODES.get(code, "Unknown") if code is not None else None,
+        })
+    return {
+        "latitude": lat,
+        "longitude": lon,
+        "hours": len(points),
+        "utc_offset_seconds": tz_offset,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "points": points,
+    }
+
+
 @api.get("/geocode")
 async def geocode(q: str, _: dict = Depends(current_user)):
     """Search a place/address using Open-Meteo Geocoding API (free, no key)."""

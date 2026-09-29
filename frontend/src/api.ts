@@ -155,6 +155,24 @@ export const api = {
         label: string;
       }[];
     }>(`/geocode?q=${encodeURIComponent(q)}`),
+  weatherHourly: (lat: number, lon: number, hours = 12) =>
+    apiRequest<{
+      latitude: number;
+      longitude: number;
+      hours: number;
+      utc_offset_seconds: number;
+      fetched_at: string;
+      points: {
+        time: string | null;
+        hour_label: string;
+        temperature_f: number | null;
+        precip_prob: number | null;
+        precipitation: number | null;
+        wind_mph: number | null;
+        weather_code: number | null;
+        conditions: string | null;
+      }[];
+    }>(`/weather/hourly?lat=${lat}&lon=${lon}&hours=${hours}`),
   refreshVisitWeather: (visit_id: string) =>
     apiRequest<any>(`/visits/${visit_id}/refresh-weather`, { method: "POST" }),
 };
