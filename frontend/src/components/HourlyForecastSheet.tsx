@@ -79,6 +79,36 @@ export function HourlyForecastSheet({
   const maxT = temps.length ? Math.max(...temps) : 1;
   const tRange = Math.max(1, maxT - minT);
 
+  // ---------- Best Start Time recommendation ----------
+  // Score each hour by warmth + dryness. Weighted 55% temp, 45% low-rain.
+  // Wind above 20 mph applies a penalty. Only future hours are considered.
+  let bestIdx = -1;
+  let bestScore = -Infinity;
+  points.forEach((p, i) => {
+    const t = p.temperature_f ?? minT;
+    const rain = p.precip_prob ?? 0;
+    const wind = p.wind_mph ?? 0;
+    const tempScore = tRange > 0 ? ((t - minT) / tRange) * 100 : 100;
+    const dryScore = 100 - rain;
+    const windPenalty = wind > 20 ? Math.min(30, (wind - 20) * 2) : 0;
+    const score = tempScore * 0.55 + dryScore * 0.45 - windPenalty;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = i;
+    }
+  });
+  const bestPoint = bestIdx >= 0 ? points[bestIdx] : null;
+  const bestReason = (() => {
+    if (!bestPoint) return "";
+    const rain = bestPoint.precip_prob ?? 0;
+    const wind = bestPoint.wind_mph ?? 0;
+    if (rain >= 60) return "Wettest day — this is the driest window";
+    if (rain <= 10 && (bestPoint.temperature_f ?? 0) >= maxT - 2) return "Warm & dry — ideal to start";
+    if (rain <= 20) return "Dry window, near the day's peak temp";
+    if (wind > 20) return "Watch wind — best of the low-rain hours";
+    return "Best mix of temp + low rain in the next 12h";
+  })();
+
   // Chart geometry
   const chartWidth = Math.max(320, points.length * 44); // ensure horizontal scroll for 12+ points
   const chartHeight = 180;
@@ -155,6 +185,27 @@ export function HourlyForecastSheet({
                 </View>
               </View>
 
+              {bestPoint ? (
+                <View style={styles.bestChip} testID="hourly-best-chip">
+                  <View style={styles.bestBadge}>
+                    <Ionicons name="star" size={12} color="#F59E0B" />
+                    <Text style={styles.bestBadgeText}>BEST START</Text>
+                  </View>
+                  <View style={styles.bestBody}>
+                    <Text style={styles.bestTime} testID="hourly-best-time">
+                      {bestPoint.hour_label}
+                    </Text>
+                    <Text style={styles.bestMeta}>
+                      {bestPoint.temperature_f != null
+                        ? `${Math.round(bestPoint.temperature_f)}°F`
+                        : "—"}{" "}
+                      · 💧 {Math.round(bestPoint.precip_prob ?? 0)}% · 💨{" "}
+                      {Math.round(bestPoint.wind_mph ?? 0)} mph
+                    </Text>
+                    <Text style={styles.bestReason}>{bestReason}</Text>
+                  </View>
+                </View>
+              ) : null}
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator
@@ -203,20 +254,31 @@ export function HourlyForecastSheet({
                     const cx = xFor(i);
                     const cy = yForTemp(p.temperature_f ?? minT);
                     const prob = p.precip_prob ?? 0;
+                    const isBest = i === bestIdx;
                     return (
                       <Fragment key={`pt-${i}`}>
+                        {isBest ? (
+                          <Circle
+                            cx={cx}
+                            cy={cy}
+                            r={8}
+                            fill="none"
+                            stroke="#F59E0B"
+                            strokeWidth={2}
+                          />
+                        ) : null}
                         <Circle
                           cx={cx}
                           cy={cy}
-                          r={3.5}
-                          fill={colors.brandPrimary}
+                          r={isBest ? 5 : 3.5}
+                          fill={isBest ? "#F59E0B" : colors.brandPrimary}
                         />
                         <SvgText
                           x={cx}
-                          y={cy - 8}
-                          fill={colors.onSurface}
-                          fontSize={10}
-                          fontWeight="700"
+                          y={cy - (isBest ? 12 : 8)}
+                          fill={isBest ? "#F59E0B" : colors.onSurface}
+                          fontSize={isBest ? 12 : 10}
+                          fontWeight="800"
                           textAnchor="middle"
                         >
                           {p.temperature_f != null ? `${Math.round(p.temperature_f)}°` : ""}
@@ -256,23 +318,33 @@ export function HourlyForecastSheet({
                 style={{ marginTop: spacing.md, maxHeight: 220 }}
                 showsVerticalScrollIndicator
               >
-                {points.map((p, i) => (
-                  <View key={`row-${i}`} style={styles.row} testID={`hourly-row-${i}`}>
-                    <Text style={styles.rowHour}>{p.hour_label}</Text>
-                    <Ionicons name={weatherIcon(p.weather_code)} size={18} color={colors.brandPrimary} />
-                    <Text style={styles.rowCond} numberOfLines={1}>
-                      {p.conditions || "—"}
-                    </Text>
-                    <View style={styles.rowRight}>
-                      <Text style={styles.rowTemp}>
-                        {p.temperature_f != null ? `${Math.round(p.temperature_f)}°F` : "—"}
+                {points.map((p, i) => {
+                  const isBest = i === bestIdx;
+                  return (
+                    <View
+                      key={`row-${i}`}
+                      style={[styles.row, isBest && styles.rowBest]}
+                      testID={`hourly-row-${i}`}
+                    >
+                      {isBest ? (
+                        <Ionicons name="star" size={12} color="#F59E0B" style={{ position: "absolute", left: 4, top: 12 }} />
+                      ) : null}
+                      <Text style={[styles.rowHour, isBest && styles.rowBestText]}>{p.hour_label}</Text>
+                      <Ionicons name={weatherIcon(p.weather_code)} size={18} color={isBest ? "#F59E0B" : colors.brandPrimary} />
+                      <Text style={styles.rowCond} numberOfLines={1}>
+                        {p.conditions || "—"}
                       </Text>
-                      <Text style={styles.rowRain}>
-                        💧 {Math.round(p.precip_prob ?? 0)}%
-                      </Text>
+                      <View style={styles.rowRight}>
+                        <Text style={[styles.rowTemp, isBest && styles.rowBestText]}>
+                          {p.temperature_f != null ? `${Math.round(p.temperature_f)}°F` : "—"}
+                        </Text>
+                        <Text style={styles.rowRain}>
+                          💧 {Math.round(p.precip_prob ?? 0)}%
+                        </Text>
+                      </View>
                     </View>
-                  </View>
-                ))}
+                  );
+                })}
               </ScrollView>
 
               <Text style={styles.hint}>
@@ -324,6 +396,38 @@ const styles = StyleSheet.create({
   legendItem: { flexDirection: "row", alignItems: "center", gap: 4 },
   legendSwatch: { width: 12, height: 4, borderRadius: 2 },
   legendText: { color: colors.muted, fontSize: 11, fontWeight: "600" },
+  bestChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    marginTop: spacing.sm,
+    marginBottom: spacing.md,
+    marginHorizontal: spacing.md,
+    padding: spacing.md,
+    backgroundColor: "rgba(245, 158, 11, 0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(245, 158, 11, 0.55)",
+    borderRadius: 12,
+  },
+  bestBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(245, 158, 11, 0.18)",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  bestBadgeText: {
+    color: "#B45309",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+  },
+  bestBody: { flex: 1 },
+  bestTime: { color: colors.onSurface, fontSize: 18, fontWeight: "800" },
+  bestMeta: { color: colors.onSurfaceTertiary, fontSize: 12, marginTop: 2 },
+  bestReason: { color: colors.muted, fontSize: 11, marginTop: 2, fontStyle: "italic" },
   row: {
     flexDirection: "row",
     alignItems: "center",
@@ -333,6 +437,13 @@ const styles = StyleSheet.create({
     borderBottomWidth: 0.5,
     borderBottomColor: colors.divider,
   },
+  rowBest: {
+    backgroundColor: "rgba(245, 158, 11, 0.10)",
+    borderLeftWidth: 3,
+    borderLeftColor: "#F59E0B",
+    paddingLeft: spacing.md + 4,
+  },
+  rowBestText: { color: "#B45309" },
   rowHour: {
     width: 52,
     color: colors.onSurface,
