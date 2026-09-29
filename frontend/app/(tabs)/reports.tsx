@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import { useRouter, useFocusEffect } from "expo-router";
 import { api } from "@/src/api";
+import { priorityLevelColor } from "@/src/priority";
 import { colors, spacing, radius } from "@/src/theme";
 
 export default function ReportsScreen() {
@@ -156,6 +157,24 @@ export default function ReportsScreen() {
                       <Ionicons name="sparkles" size={12} color={colors.onBrandTertiary} />
                       <Text style={styles.aiTagText}>AI Summary</Text>
                     </View>
+                    {r.priority_level ? (
+                      <View
+                        testID={`report-priority-${r.id}`}
+                        style={[
+                          styles.priorityLevelChip,
+                          { backgroundColor: priorityLevelColor(r.priority_level).bg },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.priorityLevelText,
+                            { color: priorityLevelColor(r.priority_level).text },
+                          ]}
+                        >
+                          {r.priority_level.toUpperCase()}
+                        </Text>
+                      </View>
+                    ) : null}
                     <Text style={styles.cardDate}>{r.report_date}</Text>
                   </View>
                   <Text style={styles.cardTitle} numberOfLines={1}>
@@ -356,6 +375,12 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   aiTagText: { color: colors.onBrandTertiary, fontSize: 10, fontWeight: "700" },
+  priorityLevelChip: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+    borderRadius: radius.pill,
+  },
+  priorityLevelText: { fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
   cardDate: { color: colors.muted, fontSize: 12, fontWeight: "600" },
   cardTitle: { fontSize: 16, fontWeight: "700", color: colors.onSurface },
   cardAuthor: { color: colors.muted, fontSize: 12, marginTop: 2, marginBottom: spacing.sm },

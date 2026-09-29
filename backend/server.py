@@ -31,6 +31,7 @@ from pydantic import BaseModel, EmailStr, Field
 from motor.motor_asyncio import AsyncIOMotorClient
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 from emergentintegrations.llm.openai.speech_to_text import OpenAISpeechToText
+from emergentintegrations.llm.openai import OpenAITextToSpeech
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -174,6 +175,8 @@ class ReportCreate(BaseModel):
     include_breaks: bool = True
     include_sms: bool = True
     recipient_emails: List[EmailStr] = []
+    priority_level: Optional[str] = None  # "High" | "Medium" | "Low" | None
+    priority_flags: List[dict] = Field(default_factory=list)  # [{"type": str, "reason": Optional[str]}]
 
 
 class DailyReport(BaseModel):
@@ -200,6 +203,8 @@ class DailyReport(BaseModel):
     archived_at: Optional[str] = None
     deleted_at: Optional[str] = None
     public_token: Optional[str] = None
+    priority_level: Optional[str] = None
+    priority_flags: List[dict] = []
 
 
 # ---------- Auth helpers ----------
@@ -611,12 +616,36 @@ async def sms_today(request: Request, user: dict = Depends(current_user)):
 # ---------- Reports ----------
 async def build_ai_summary(context: dict) -> str:
     system = (
-        "You are an experienced painting operations manager writing a professional daily field report. "
-        "Write a concise, professional summary (250-400 words) covering: tasks completed, communications, "
-        "site visits, weather impact, delays, and next steps. Use short paragraphs and clear headers. "
-        "Focus on facts a business owner needs to run the operation."
+        "You are an experienced painting operations project manager writing a professional daily field report "
+        "for the OWNER of the company. Output MUST be readable, decisive, and organized using EXACTLY the "
+        "seven Markdown section headers below, in this order, each on its own line. Do NOT add or rename "
+        "headers, do NOT wrap them in extra symbols, and always keep them ALL CAPS.\n\n"
+        "## WORK COMPLETED\n"
+        "## COMMUNICATIONS\n"
+        "## WEATHER IMPACT\n"
+        "## DELAY / CONSTRAINTS\n"
+        "## CHANGE ORDER / MATERIALS\n"
+        "## NEXT STEPS\n"
+        "## OVERALL SUMMARY\n\n"
+        "Formatting rules:\n"
+        "- Under each header write 2-6 tight bullet points prefixed with '- '.\n"
+        "- Wrap CUSTOMER names, ADDRESSES, and PROJECT CODES in double-asterisk bold, e.g. **John Doe**, **123 Main St**, **P-1042**.\n"
+        "- If a priority flag reason was provided, echo it verbatim in DELAY / CONSTRAINTS on its own bullet "
+        "prefixed with '[URGENT: <flag type>]' so it can be highlighted red in the app.\n"
+        "- OVERALL SUMMARY is 2-3 concise sentences the owner can read in 10 seconds. No fluff.\n"
+        "- Never invent facts. If a section has no info, write '- None reported today.'\n"
     )
     prompt_lines = [f"Author: {context.get('author_name')} ({context.get('author_role')})"]
+    if context.get("priority_level"):
+        prompt_lines.append(f"Priority level: {context['priority_level']}")
+    if context.get("priority_flags"):
+        prompt_lines.append("Priority flags:")
+        for f in context["priority_flags"]:
+            reason = f.get("reason")
+            if reason:
+                prompt_lines.append(f"- {f.get('type')} — reason: {reason}")
+            else:
+                prompt_lines.append(f"- {f.get('type')}")
     if context.get("project_name") or context.get("project_code"):
         prompt_lines.append(f"Project: {context.get('project_name') or ''} {context.get('project_code') or ''}")
     prompt_lines.append(f"Date: {context.get('report_date')}")
@@ -655,7 +684,7 @@ async def build_ai_summary(context: dict) -> str:
                 f"- [{s.get('channel')} {s.get('direction')}] {s.get('contact_name')} ({s.get('contact_role')}) "
                 f"- {s.get('category')}: {s.get('content')}"
             )
-    prompt = "\n".join(prompt_lines) + "\n\nWrite the daily summary now."
+    prompt = "\n".join(prompt_lines) + "\n\nWrite the daily report now using the required headers."
 
     try:
         chat = LlmChat(
@@ -668,11 +697,17 @@ async def build_ai_summary(context: dict) -> str:
     except Exception as e:
         logger.error(f"AI summary failed: {e}")
         return (
-            f"[AI summary unavailable] Manual notes:\n"
-            f"Highlights: {context.get('highlights', 'None')}\n"
-            f"Delays: {context.get('delays', 'None')}\n"
-            f"Change orders: {context.get('change_orders', 'None')}\n"
-            f"Material notes: {context.get('material_notes', 'None')}"
+            "## WORK COMPLETED\n- None reported today.\n\n"
+            "## COMMUNICATIONS\n- None reported today.\n\n"
+            "## WEATHER IMPACT\n- None reported today.\n\n"
+            "## DELAY / CONSTRAINTS\n"
+            f"- {context.get('delays') or 'None reported today.'}\n\n"
+            "## CHANGE ORDER / MATERIALS\n"
+            f"- {context.get('change_orders') or 'None reported today.'}\n"
+            f"- {context.get('material_notes') or ''}\n\n"
+            "## NEXT STEPS\n- None reported today.\n\n"
+            "## OVERALL SUMMARY\n"
+            f"- {context.get('highlights') or 'No summary available.'}\n"
         )
 
 
@@ -735,6 +770,8 @@ async def create_report(data: ReportCreate, request: Request, user: dict = Depen
         "breaks": breaks,
         "sms_logs": sms_logs,
         "weather": weather,
+        "priority_level": data.priority_level,
+        "priority_flags": data.priority_flags,
     }
     ai_summary = await build_ai_summary(ai_context)
 
@@ -757,6 +794,8 @@ async def create_report(data: ReportCreate, request: Request, user: dict = Depen
         "weather": weather,
         "email_sent_to": [],
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "priority_level": data.priority_level,
+        "priority_flags": data.priority_flags,
     }
     await request.app.db.reports.insert_one(report.copy())
     report.pop("_id", None)
@@ -777,21 +816,118 @@ async def create_report(data: ReportCreate, request: Request, user: dict = Depen
     return DailyReport(**report)
 
 
+def _summary_to_email_html(summary: str) -> str:
+    """Convert the structured markdown summary into styled HTML for email delivery."""
+    known = [
+        "WORK COMPLETED",
+        "COMMUNICATIONS",
+        "WEATHER IMPACT",
+        "DELAY / CONSTRAINTS",
+        "CHANGE ORDER / MATERIALS",
+        "NEXT STEPS",
+        "OVERALL SUMMARY",
+    ]
+    sections: List[tuple] = []  # [(header, body_lines[])]
+    current_header: Optional[str] = None
+    current_lines: List[str] = []
+    for raw in summary.splitlines():
+        line = raw.strip()
+        stripped = line.lstrip("#").strip().upper()
+        if stripped in known and (line.startswith("##") or line.startswith("#")):
+            if current_header:
+                sections.append((current_header, current_lines))
+            current_header = stripped
+            current_lines = []
+        else:
+            if current_header is None:
+                continue
+            current_lines.append(line)
+    if current_header:
+        sections.append((current_header, current_lines))
+
+    def _fmt_bullet(text: str) -> str:
+        # Style [URGENT: ...] lines red
+        if text.startswith("[URGENT:") or text.upper().startswith("- [URGENT:"):
+            body = escape(text.lstrip("- ").strip())
+            return f'<li style="color:#DC2626;font-weight:600">{body}</li>'
+        body = text.lstrip("- ").strip()
+        # Bold-highlight **...** as inline-emphasis with brand color
+        body_html = escape(body)
+        while "**" in body_html:
+            body_html = body_html.replace(
+                "**",
+                '<strong style="color:#B45309;background:#FEF3C7;padding:1px 4px;border-radius:4px">',
+                1,
+            )
+            if "**" in body_html:
+                body_html = body_html.replace("**", "</strong>", 1)
+        return f'<li style="margin-bottom:4px">{body_html}</li>'
+
+    blocks = []
+    for header, lines in sections:
+        items = [l for l in lines if l and l != "-"]
+        if not items:
+            body_html = '<p style="color:#6B7280;margin:0">None reported today.</p>'
+        else:
+            bullet_lines = [l for l in items if l.startswith("- ") or l.startswith("[URGENT:")]
+            if bullet_lines:
+                body_html = "<ul style=\"padding-left:20px;margin:6px 0 0 0\">" + "".join(_fmt_bullet(l) for l in bullet_lines) + "</ul>"
+            else:
+                paragraphs = "".join(f'<p style="margin:0 0 6px 0">{escape(l)}</p>' for l in items)
+                body_html = paragraphs
+        blocks.append(
+            f'<section style="margin:20px 0">'
+            f'<h3 style="margin:0 0 8px 0;color:#111827;font-size:14px;text-transform:uppercase;'
+            f'letter-spacing:0.5px;font-weight:700;border-bottom:2px solid #D97706;padding-bottom:4px;'
+            f'display:inline-block">{escape(header)}</h3>'
+            f'{body_html}'
+            f'</section>'
+        )
+    return "".join(blocks)
+
+
+def _priority_badge_html(level: Optional[str], flags: List[dict]) -> str:
+    if not level and not flags:
+        return ""
+    color = {"High": "#DC2626", "Medium": "#D97706", "Low": "#4B5563"}.get(level or "", "#4B5563")
+    chips = []
+    if level:
+        chips.append(
+            f'<span style="background:{color};color:#fff;padding:4px 10px;border-radius:999px;'
+            f'font-size:12px;font-weight:700;margin-right:6px">{escape(level)} PRIORITY</span>'
+        )
+    for f in flags:
+        t = escape(f.get("type", ""))
+        chips.append(
+            f'<span style="background:#FEF3C7;color:#92400E;padding:3px 8px;border-radius:999px;'
+            f'font-size:11px;font-weight:700;margin-right:4px;margin-top:4px;display:inline-block">'
+            f'⚑ {t}</span>'
+        )
+    return f'<div style="margin:12px 0">{" ".join(chips)}</div>'
+
+
 def _report_email_html(report: dict) -> str:
-    summary_html = escape(report["ai_summary"]).replace("\n", "<br>")
+    body_html = _summary_to_email_html(report["ai_summary"])
+    priority_html = _priority_badge_html(report.get("priority_level"), report.get("priority_flags", []))
+    project = report.get("project_name") or report.get("project_code") or ""
     return (
-        f'<table role="presentation" width="100%" style="font-family:Arial,sans-serif">'
+        f'<table role="presentation" width="100%" style="font-family:Arial,sans-serif;'
+        f'background:#F9FAFB;padding:0">'
+        f'<tr><td align="center" style="padding:24px">'
+        f'<table role="presentation" width="600" style="background:#FFFFFF;border-radius:12px;'
+        f'border:1px solid #E5E7EB">'
         f'<tr><td style="padding:24px">'
-        f'<h2 style="margin:0 0 12px 0;color:#111827">Daily Report — {escape(report["report_date"])}</h2>'
-        f'<p style="margin:0 0 8px 0;color:#374151">'
-        f'From: <strong>{escape(report["author_name"])}</strong> ({escape(report["author_role"])})'
-        f'{" • Project: " + escape(report.get("project_name") or report.get("project_code") or "") if report.get("project_name") or report.get("project_code") else ""}'
-        f'</p>'
+        f'<h2 style="margin:0 0 4px 0;color:#111827">Daily Field Report</h2>'
+        f'<p style="margin:0;color:#6B7280;font-size:13px">{escape(report["report_date"])} · '
+        f'<strong>{escape(report["author_name"])}</strong> ({escape(report["author_role"])})'
+        f'{" · <strong>" + escape(project) + "</strong>" if project else ""}</p>'
+        f'{priority_html}'
         f'<hr style="border:none;border-top:1px solid #E5E7EB;margin:16px 0">'
-        f'<div style="color:#111827;line-height:1.6">{summary_html}</div>'
+        f'{body_html}'
         f'<hr style="border:none;border-top:1px solid #E5E7EB;margin:16px 0">'
         f'<p style="font-size:12px;color:#6B7280;margin:0">Sent by {escape(EMAIL_FROM_NAME)}. '
         f'We never ask for your password or card details by email.</p>'
+        f'</td></tr></table>'
         f'</td></tr></table>'
     )
 
@@ -1127,6 +1263,8 @@ async def regenerate_summary(report_id: str, request: Request, user: dict = Depe
         "breaks": doc.get("breaks", []),
         "sms_logs": doc.get("sms_logs", []),
         "weather": doc.get("weather"),
+        "priority_level": doc.get("priority_level"),
+        "priority_flags": doc.get("priority_flags", []),
     }
     new_summary = await build_ai_summary(ai_context)
     await request.app.db.reports.update_one(
@@ -1150,25 +1288,32 @@ async def report_tts(report_id: str, request: Request, user: dict = Depends(curr
     FULL_ROLES = {Role.OWNER.value, Role.OPERATIONS.value, Role.PROJECT_MANAGER.value}
     if user["role"] not in FULL_ROLES and not user.get("is_admin") and doc["user_id"] != user["id"]:
         raise HTTPException(403, "Not allowed")
-    if not ELEVENLABS_API_KEY:
-        raise HTTPException(503, "ElevenLabs API key not configured")
     # Trim summary to something reasonable for TTS budget
     text = (doc.get("ai_summary") or "").strip()
     if not text:
         raise HTTPException(400, "Report has no summary to read")
-    text = text[:2500]
+    # Strip markdown-style marks so the voice does not read "*", "#", or "_" aloud
+    tts_text = re.sub(r"[*_#>~|`]", "", text)
+    tts_text = re.sub(r"https?://\S+", "", tts_text)
+    tts_text = re.sub(r"\s+", " ", tts_text).strip()
+    tts_text = tts_text[:2500]
 
     import hashlib
-    summary_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+    summary_hash = hashlib.sha256(tts_text.encode()).hexdigest()[:16]
     cached = doc.get("tts_cache")
     if cached and cached.get("hash") == summary_hash and cached.get("audio_data_url"):
-        return {"audio_data_url": cached["audio_data_url"], "bytes": cached.get("bytes", 0), "cached": True}
+        return {
+            "audio_data_url": cached["audio_data_url"],
+            "bytes": cached.get("bytes", 0),
+            "cached": True,
+            "voice_provider": cached.get("voice_provider", "elevenlabs"),
+        }
 
-    def _synthesize() -> bytes:
+    def _synthesize_elevenlabs() -> bytes:
         from elevenlabs.client import ElevenLabs
         client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
         stream = client.text_to_speech.convert(
-            text=text,
+            text=tts_text,
             voice_id=ELEVENLABS_VOICE_ID,
             model_id="eleven_multilingual_v2",
             output_format="mp3_44100_128",
@@ -1179,27 +1324,71 @@ async def report_tts(report_id: str, request: Request, user: dict = Depends(curr
                 chunks += c
         return chunks
 
-    try:
-        audio = await run_in_threadpool(_synthesize)
-    except Exception as e:
-        detail = ""
-        body = getattr(e, "body", None)
-        if isinstance(body, dict):
-            d = body.get("detail")
-            if isinstance(d, dict):
-                detail = d.get("message") or ""
-        status = getattr(e, "status_code", None)
-        logger.error(f"ElevenLabs TTS failed status={status} detail={detail!r}")
-        if status == 401 or "invalid api key" in detail.lower():
-            raise HTTPException(502, "ElevenLabs API key invalid — update ELEVENLABS_API_KEY in backend/.env")
-        raise HTTPException(502, f"TTS failed: {detail or str(e)[:120]}")
+    async def _synthesize_openai() -> bytes:
+        tts = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY)
+        return await tts.generate_speech(
+            text=tts_text,
+            model="tts-1",
+            voice="onyx",
+            response_format="mp3",
+        )
+
+    audio: bytes = b""
+    voice_provider = "elevenlabs"
+    el_error: str | None = None
+
+    if ELEVENLABS_API_KEY:
+        try:
+            audio = await run_in_threadpool(_synthesize_elevenlabs)
+        except Exception as e:
+            detail = ""
+            body = getattr(e, "body", None)
+            if isinstance(body, dict):
+                d = body.get("detail")
+                if isinstance(d, dict):
+                    detail = d.get("message") or ""
+                elif isinstance(d, str):
+                    detail = d
+            status_code = getattr(e, "status_code", None)
+            el_error = f"status={status_code} detail={detail!r}"
+            logger.warning(f"ElevenLabs TTS failed, falling back to OpenAI TTS: {el_error}")
+            audio = b""
+
+    # Fallback (or primary if no ElevenLabs key) → Emergent-managed OpenAI TTS
+    if not audio:
+        try:
+            audio = await _synthesize_openai()
+            voice_provider = "openai"
+        except Exception as e:
+            logger.error(f"OpenAI TTS fallback also failed: {e!r}")
+            if el_error:
+                raise HTTPException(
+                    502,
+                    "Voice generation temporarily unavailable. ElevenLabs quota exhausted "
+                    "and OpenAI fallback failed. Please try again shortly.",
+                )
+            raise HTTPException(502, f"TTS failed: {str(e)[:160]}")
+
+    if not audio:
+        raise HTTPException(502, "TTS produced no audio")
+
     b64 = _b64.b64encode(audio).decode()
     audio_data_url = f"data:audio/mpeg;base64,{b64}"
     await request.app.db.reports.update_one(
         {"id": report_id},
-        {"$set": {"tts_cache": {"hash": summary_hash, "audio_data_url": audio_data_url, "bytes": len(audio)}}},
+        {"$set": {"tts_cache": {
+            "hash": summary_hash,
+            "audio_data_url": audio_data_url,
+            "bytes": len(audio),
+            "voice_provider": voice_provider,
+        }}},
     )
-    return {"audio_data_url": audio_data_url, "bytes": len(audio), "cached": False}
+    return {
+        "audio_data_url": audio_data_url,
+        "bytes": len(audio),
+        "cached": False,
+        "voice_provider": voice_provider,
+    }
 
 
 # ---------- Object Storage helpers (Emergent managed) ----------

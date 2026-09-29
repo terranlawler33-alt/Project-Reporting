@@ -10,6 +10,8 @@ import { useAudioPlayer, useAudioPlayerStatus, setAudioModeAsync } from "expo-au
 import { api } from "@/src/api";
 import { getToken } from "@/src/auth/storage";
 import { authedPhotoUrl } from "@/src/photos";
+import { StructuredSummary } from "@/src/components/StructuredSummary";
+import { priorityLevelColor } from "@/src/priority";
 import { colors, spacing, radius } from "@/src/theme";
 
 export default function ReportDetail() {
@@ -183,6 +185,36 @@ export default function ReportDetail() {
           {report.author_name} · {report.author_role}
         </Text>
 
+        {(report.priority_level || (report.priority_flags && report.priority_flags.length > 0)) ? (
+          <View style={styles.priorityBar} testID="priority-bar">
+            {report.priority_level ? (
+              <View
+                testID="priority-level-chip"
+                style={[
+                  styles.priorityLevelChip,
+                  { backgroundColor: priorityLevelColor(report.priority_level).bg },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.priorityLevelText,
+                    { color: priorityLevelColor(report.priority_level).text },
+                  ]}
+                >
+                  {report.priority_level.toUpperCase()} PRIORITY
+                </Text>
+              </View>
+            ) : null}
+            <View style={styles.flagChipRow}>
+              {(report.priority_flags || []).map((f: any) => (
+                <View key={f.type} style={styles.flagChip} testID={`flag-chip-${f.type}`}>
+                  <Text style={styles.flagChipText}>⚑ {f.type}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        ) : null}
+
         {report.email_sent_to?.length ? (
           <View style={styles.emailSentBox} testID="email-sent-box">
             <Ionicons name="mail" size={14} color={colors.success} />
@@ -222,7 +254,7 @@ export default function ReportDetail() {
               </Text>
             </Pressable>
           </View>
-          <Text style={styles.summaryText}>{report.ai_summary}</Text>
+          <StructuredSummary summary={report.ai_summary} />
         </View>
 
         {report.weather && (
@@ -481,6 +513,25 @@ const styles = StyleSheet.create({
     marginTop: spacing.lg,
   },
   summaryText: { color: colors.onSurface, fontSize: 15, lineHeight: 22 },
+  priorityBar: {
+    marginTop: spacing.md,
+    gap: spacing.xs,
+  },
+  priorityLevelChip: {
+    alignSelf: "flex-start",
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+  },
+  priorityLevelText: { fontSize: 11, fontWeight: "800", letterSpacing: 0.5 },
+  flagChipRow: { flexDirection: "row", flexWrap: "wrap", gap: 4 },
+  flagChip: {
+    backgroundColor: colors.brandTertiary,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+  },
+  flagChipText: { color: colors.onBrandTertiary, fontSize: 11, fontWeight: "700" },
   summaryHeaderRow: { flexDirection: "row", justifyContent: "flex-end", marginBottom: spacing.sm },
   playBtn: {
     flexDirection: "row",

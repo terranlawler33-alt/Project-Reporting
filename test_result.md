@@ -101,3 +101,71 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: |
+  Daily reporting mobile app (Expo + FastAPI + MongoDB) for management/owners.
+  Current session task: Fix bug in "Read Aloud" (TTS) function — user reports HTTP 502.
+
+backend:
+  - task: "Read Aloud (TTS) — ElevenLabs with OpenAI fallback"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            User reported HTTP 502 on Read Aloud. Root cause: ElevenLabs quota exhausted
+            (1,775 credits left, request needed 1,895–1,996). Old code labelled it "API key
+            invalid" (wrong message). Fix:
+            1. Added Emergent-managed OpenAI TTS fallback (`OpenAITextToSpeech`, model tts-1,
+               voice onyx). If ElevenLabs fails or is unconfigured, automatically fall back.
+            2. Strip markdown marks (*, _, #, `, urls) before TTS so voice does not read them.
+            3. Response now returns `voice_provider` ("elevenlabs" or "openai") for
+               transparency; cache stores it too.
+            4. Better error message when both providers fail.
+            Endpoint: POST /api/reports/{report_id}/tts
+            Verified logs show ElevenLabs 401 → OpenAI TTS success on live request.
+        - working: true
+          agent: "testing"
+          comment: |
+            Iteration 7 — 11/11 pytest tests PASS. Confirmed:
+              - ElevenLabs 401 (quota) → OpenAI TTS fallback → 200 with voice_provider="openai"
+              - 2nd call returns cached=true with same URL
+              - 400 for empty summary, 404 for missing report
+              - RBAC: non-author non-full-role → 403; author/admin → 200
+              - Regression: GET/POST reports, regenerate-summary all healthy (regen
+                invalidates tts_cache correctly)
+            Report: /app/test_reports/iteration_7.json
+
+metadata:
+  created_by: "main_agent"
+  version: "1.1"
+  test_sequence: 7
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Read Aloud (TTS) — ElevenLabs with OpenAI fallback"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    - agent: "main"
+      message: |
+        Bug fix: TTS endpoint POST /api/reports/{id}/tts was returning 502 because
+        ElevenLabs quota is exhausted. Added transparent OpenAI TTS fallback via
+        emergentintegrations.OpenAITextToSpeech(EMERGENT_LLM_KEY). Please test:
+        1. Login as admin@paintops.com / Admin@12345
+        2. Fetch existing reports via GET /api/reports (or create a new one)
+        3. Call POST /api/reports/{id}/tts on a report that has an ai_summary
+        4. Verify response is 200 with audio_data_url starting "data:audio/mpeg;base64,"
+           and voice_provider field is either "elevenlabs" or "openai"
+        5. Call it a second time on same report — expect cached=true
+        6. Verify the endpoint returns 400 if report has no ai_summary
+        7. Verify RBAC: non-author non-full-role user gets 403
+        Do NOT test frontend UI — backend only.

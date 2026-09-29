@@ -25,6 +25,8 @@ import {
 import { api } from "@/src/api";
 import { transcribeAudio } from "@/src/voice";
 import { RecipientGroupPicker } from "@/src/components/RecipientGroupPicker";
+import { PriorityPicker, PriorityFlagEntry } from "@/src/components/PriorityPicker";
+import { flagRequiresReason } from "@/src/priority";
 import { colors, spacing, radius } from "@/src/theme";
 
 export default function NewReport() {
@@ -44,6 +46,8 @@ export default function NewReport() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [transcribing, setTranscribing] = useState(false);
+  const [priorityLevel, setPriorityLevel] = useState<string | null>(null);
+  const [priorityFlags, setPriorityFlags] = useState<PriorityFlagEntry[]>([]);
 
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(recorder);
@@ -88,6 +92,14 @@ export default function NewReport() {
 
   const generate = async () => {
     setError(null);
+    // Enforce reason presence for flags that require it
+    const missingReason = priorityFlags.find(
+      (f) => flagRequiresReason(f.type) && !(f.reason || "").trim(),
+    );
+    if (missingReason) {
+      setError(`Please add a reason for "${missingReason.type}".`);
+      return;
+    }
     setSaving(true);
     try {
       const recipient_emails = emailsText
@@ -106,6 +118,8 @@ export default function NewReport() {
         include_breaks: includeBreaks,
         include_sms: includeSms,
         recipient_emails,
+        priority_level: priorityLevel,
+        priority_flags: priorityFlags.map((f) => ({ type: f.type, reason: f.reason || null })),
       });
       router.replace(`/report/${r.id}`);
     } catch (e: any) {
@@ -222,6 +236,13 @@ export default function NewReport() {
           <Toggle label="Include communications log" value={includeSms} onChange={setIncludeSms} testID="toggle-sms" />
           <Toggle label="Include weather" value={includeWeather} onChange={setIncludeWeather} testID="toggle-weather" />
         </View>
+
+        <PriorityPicker
+          level={priorityLevel}
+          onLevelChange={setPriorityLevel}
+          flags={priorityFlags}
+          onFlagsChange={setPriorityFlags}
+        />
 
         <Text style={styles.label}>Email to management (comma-separated)</Text>
         <RecipientGroupPicker

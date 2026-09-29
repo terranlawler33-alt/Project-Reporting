@@ -6,10 +6,10 @@ Field-ops daily reporting mobile app for a painting/construction company. Field 
 ## Stack
 - Expo Router (React Native) frontend, iOS + Android + Web
 - FastAPI + MongoDB backend, APScheduler for weekly cron
-- Emergent Universal LLM Key (GPT 5.4 summaries + digests, Whisper-1 transcription)
+- Emergent Universal LLM Key (GPT 5.4 summaries + digests, Whisper-1 transcription, OpenAI TTS fallback)
 - Emergent Resend for daily & weekly emails
 - Emergent Managed Object Storage for visit photos
-- ElevenLabs TTS for "Read aloud"
+- ElevenLabs TTS for "Read aloud" (primary) with Emergent OpenAI TTS auto-fallback when quota exhausted
 - Open-Meteo for weather
 - react-native-maps native / chip fallback on web
 - react-native-signature-canvas for customer sign-off

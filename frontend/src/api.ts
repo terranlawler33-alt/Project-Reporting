@@ -105,7 +105,7 @@ export const api = {
   setSchedule: (payload: any) =>
     apiRequest<any>("/digest/schedule", { method: "PUT", body: JSON.stringify(payload) }),
   ttsReport: (report_id: string) =>
-    apiRequest<{ audio_data_url: string; bytes: number; cached?: boolean }>(`/reports/${report_id}/tts`, {
+    apiRequest<{ audio_data_url: string; bytes: number; cached?: boolean; voice_provider?: string }>(`/reports/${report_id}/tts`, {
       method: "POST",
     }),
   listGroups: () => apiRequest<any[]>("/recipient-groups"),

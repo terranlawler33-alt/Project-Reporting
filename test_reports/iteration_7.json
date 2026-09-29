@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration 7 — backend-only regression testing of the Read Aloud (TTS) 502 fix. Verified POST /api/reports/{report_id}/tts now returns 200 with a valid MP3 data URL via the Emergent-managed OpenAI TTS fallback whenever ElevenLabs fails (quota is truly exhausted right now: 1775 credits remaining vs 1895+ required — observed live in /var/log/supervisor/backend.err.log: 'ElevenLabs TTS failed, falling back to OpenAI TTS: status=401 detail=...'). Wrote 11 pytest tests in /app/backend/tests/test_iteration7_tts_fallback.py, all PASSING in 50.4s (-n 0, sequential). Coverage: (1) Fresh generation on a brand-new admin-authored report → 200, audio_data_url starts with 'data:audio/mpeg;base64,', bytes=1358208 (>1KB), cached=false, voice_provider='openai'. (2) Second identical call → 200, cached=true, exact same audio_data_url/bytes/voice_provider. (3) OpenAI-fallback proof: created a report, overwrote ai_summary in Mongo with a ~2200-char paragraph that guarantees ElevenLabs quota exhaustion, called TTS → 200, voice_provider='openai', bytes=2140032, confirming the fallback branch fires. (4) 404 for a non-existent report_id. (5) 400 with message 'Report has no summary to read' when ai_summary is emptied in Mongo. (6) RBAC — Production role (not Owner/Operations/PM, not admin, not author) on an admin-authored report → 403 'Not allowed'. (7) Author with Production role on OWN report → 200 (voice_provider=openai). (8) Admin on any report → 200. (9-11) Regression: GET /api/reports returns list, POST /api/reports still creates a report with ai_summary, POST /api/reports/{id}/regenerate-summary invalidates tts_cache — pre-regen call returned cached=true, post-regen call returned cached=false with a freshly synthesized audio. Note: request spec referenced '/regen' — the actual endpoint is '/regenerate-summary' (correctly used).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/reports/{id}/tts", "issue": "Cost/UX observation only — ElevenLabs quota is fully depleted so every fresh TTS call is now billed to the Emergent OpenAI TTS budget. Main agent may want to (a) top up ElevenLabs, (b) add a metric/log gauge counting fallback-vs-primary calls, and (c) expose the 'voice_provider' field to the frontend so users know which engine served the audio."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration7_tts_fallback.py",
+    "/app/test_reports/pytest/pytest_iteration7.xml"
+  ],
+  "action_items": [
+    "No blocking issues. TTS 502 bug is fixed; endpoint is 100% healthy via OpenAI fallback.",
+    "(Optional) Surface 'voice_provider' in the mobile UI (small badge or toast) so users can see when the backup engine is in use.",
+    "(Optional) Emit a Prometheus/log counter for fallback hits so ops can decide when to top up ElevenLabs.",
+    "(Carry-over from prior iterations) server.py is now ~1727 lines — split into routers when convenient."
+  ],
+  "critical_code_review_comments": [
+    "server.py:1312-1325 (_synthesize_elevenlabs) — synchronous elevenlabs client is wrapped in run_in_threadpool which is correct; however the streamed 'chunks = b\"\"' concatenation is O(n^2) for large audio. Use bytearray or list-append + b''.join(...) if summaries grow.",
+    "server.py:1327-1334 (_synthesize_openai) — no explicit timeout on OpenAITextToSpeech.generate_speech. If the upstream stalls, the whole request hangs. Consider wrapping in asyncio.wait_for with a sane timeout (e.g., 60s).",
+    "server.py:1358-1370 — when ElevenLabs is missing and OpenAI also fails, the raised HTTPException body length is capped at 160 chars, which is fine, but the second branch (el_error is None, no key) hardcodes the same 502; consider distinguishing 'no engine configured' (500) from 'both engines failed transiently' (502).",
+    "server.py:1377-1385 — tts_cache is stored per-report but keyed only on the summary hash; if a future feature adds voice selection (e.g., user picks 'onyx' vs 'alloy'), the cache will serve the wrong audio. Consider including voice_provider + voice_id in the hash.",
+    "server.py:1281-1400 — endpoint uses raw HTTPException 502 for a fallback failure; when both engines truly fail this correctly surfaces to the mobile app, but consider structured error body {error, provider_tried, retry_after_hint} to guide the frontend."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration7_tts_fallback.py (new — 11 pytest tests; forces both happy-path fallback and 400/403/404/cache/regen regression paths)",
+    "/app/test_reports/pytest/pytest_iteration7.xml (new — JUnit output, 11 passed / 0 failed)"
+  ],
+  "success_rate": {"backend": "100% (11/11 pass)", "frontend": "not tested this iteration per E1 request (backend only)"},
+  "seed_data_creation": "Reused admin@paintops.com / Admin@12345 and production@paintops.com / Prod@12345. Test created 5 new reports in Mongo: TEST_IT7_FreshTTS (admin, has cached OpenAI TTS), TEST_IT7_ProdAuthored (production user), TEST_IT7_OwnerAuthored (admin, used for RBAC 403), TEST_IT7_EmptySummary (admin, ai_summary force-cleared to test 400), TEST_IT7_LongSummary (admin, ai_summary overwritten with ~2200-char text to force EL failure), TEST_IT7_RegressionCreate (admin, regression smoke). Regenerate-summary called ONCE on TEST_IT7_FreshTTS (burns ~1 GPT credit).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "TTS endpoint is /api/reports/{id}/tts. Real regenerate endpoint is /api/reports/{id}/regenerate-summary (NOT /regen). Every fresh TTS call currently goes through OpenAI fallback because ElevenLabs quota (1775 credits) is smaller than any real summary (>1895 chars). Test file is /app/backend/tests/test_iteration7_tts_fallback.py — run with `python -m pytest backend/tests/test_iteration7_tts_fallback.py -n 0 -v` (pytest.ini defaults to `-n 2 --dist loadscope` which breaks module-scoped fixtures that share state across classes; ALWAYS pass -n 0 for this file). Base URL from EXPO_PUBLIC_BACKEND_URL. Two mongo direct-writes are used (empty-summary and long-summary force paths) via motor + MONGO_URL / DB_NAME env — harmless, and the test-created reports remain in DB with TEST_IT7_* prefix for easy cleanup.",
+  "rca_of_issue": "Original bug: POST /reports/{id}/tts returned HTTP 502 because ElevenLabs quota (10000 credit cap, 1775 remaining) is less than the character count of a typical AI summary (~1895+ chars). E1 fix: added a try/except around the ElevenLabs call that captures the httpx 401 quota exception and transparently falls back to emergentintegrations.OpenAITextToSpeech (model=tts-1, voice=onyx, format=mp3, key=EMERGENT_LLM_KEY). Response body was extended with a `voice_provider` field so clients can tell which engine served the audio. tts_cache also stores voice_provider so a cached read returns the correct label. Verified end-to-end: 11/11 tests pass including a purpose-built long-summary test that guarantees ElevenLabs fails and OpenAI takes over. No further mitigation needed unless the main agent wants to top up ElevenLabs credits or expose voice_provider in the mobile UI."
+}

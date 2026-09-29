@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 6: full backend + frontend acceptance testing for Priority Flags and Structured AI Report. Backend: 21/21 pytest tests passed in /app/backend/tests/test_iteration6.py (~28s). Verified (a) POST /api/reports with priority_level='High' + 2 flags (Labor Issue+reason, Change Order no reason) returns DailyReport with ai_summary containing all 7 markdown headers in exact order and a bullet matching /\\[URGENT:\\s*Labor Issue/i inside the DELAY / CONSTRAINTS section; (b) POST /api/reports without any priority fields returns priority_level=None, priority_flags=[] and still emits all 7 structured headers (backward compat); (c) GET /api/reports (list) and GET /api/reports/{id} both include priority_level + priority_flags; (d) POST /api/reports/{id}/regenerate-summary preserves priority context — regenerated ai_summary still contains [URGENT: Labor Issue …] under DELAY / CONSTRAINTS; (e) email path exercised via recipient_emails=['delivered@resend.dev'] (Resend sink) with priority_level='Medium' + Property Damage flag succeeds and still emits 7 headers; (f) FULL REGRESSION on iter 1-5 endpoints — auth/me, admin/users, visits/today, breaks/today, sms-logs/today, customers, digest/schedule, reports/{id}/workday-export, transcribe (400 no file), recipient-groups list, reports/{id}/portal-link, reports/{id}/signature (PATCH). All green. TTS NOT touched this run (per iter 6 budget note). Frontend E2E on 390x844 web preview: admin login -> Reports tab -> Create Report -> filled project_name='Priority Test 2' + highlights='Test priority run' -> tapped Labor Issue flag -> tapped Generate WITHOUT reason -> testID='report-error' displayed exact text 'Please add a reason for \"Labor Issue\".' (frontend guard verified). Then set priority=High, entered reason 'Sub short 1 man' (red-styled input), added Change Order flag, tapped Generate -> navigated to detail in ~10s -> [data-testid='priority-bar'] present, [data-testid='priority-level-chip'] shows 'HIGH PRIORITY' (red), Labor Issue + Change Order flag chips visible under bar, all 7 underlined section headers render via StructuredSummary (WORK COMPLETED, COMMUNICATIONS, WEATHER IMPACT, DELAY / CONSTRAINTS, CHANGE ORDER / MATERIALS, NEXT STEPS, OVERALL SUMMARY), customer/address/project-code amber-highlight pills visible (7425 Henderson Blvd SE, UI Test Customer, 1 UI Test St, 123 Main St, TEST_Acme Painters, ACME-01, UI-TEST). Back on Reports list — new 'Priority Test 2' row shows red 'HIGH' chip (testID report-priority-{id}); 'TEST_IT6_EmailSink' shows amber 'MEDIUM'.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "React Native Web / styles", "issue": "Runtime warning still present: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' Non-blocking, carry-over from iterations 4 & 5."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration6.py",
+    "/app/test_reports/pytest/pytest_iteration6.xml"
+  ],
+  "action_items": [
+    "No blocking issues. All iteration-6 acceptance criteria met (backend 21/21, frontend all flows green).",
+    "(Nit, carry-over from iter 5) `regenerated_at` is written to Mongo by regenerate-summary but not declared on DailyReport model, so callers never see the timestamp.",
+    "(Nit, carry-over) /app/backend/server.py is now 1675 lines — worth splitting into routers.",
+    "(Optional carry-over) Migrate deprecated `shadow*` StyleSheet props to `boxShadow`."
+  ],
+  "critical_code_review_comments": [
+    "server.py:617-636 — the system prompt for build_ai_summary is well-structured; consider extracting the header list into a module-level constant so downstream renderers/tests can import the same source of truth (currently the same list is duplicated in StructuredSummary.tsx and _report_email_html section-parsing).",
+    "server.py:713-799 — create_report accepts priority_flags as `List[dict]` with no schema validation on the dict shape. A client sending `{'type': 42}` or a malformed reason will silently propagate into Mongo and the AI context. Recommend a Pydantic `PriorityFlag` sub-model (type: str, reason: Optional[str]).",
+    "server.py:1248-1275 — regenerate-summary rebuilds ai_context from the persisted doc which is correct, but does not re-emit the email or update `updated_at`. If the intent is that admins can 'fix a bad summary', consider also stamping updated_at so downstream digests pick up the fresh copy.",
+    "frontend PriorityPicker.tsx:87-97 — reason TextInput uses `multiline` without `numberOfLines` / `maxHeight`, so a very long reason can push the Generate button off-screen on 375-wide viewports. Consider a maxHeight or a trimmed preview."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration6.py (new — 21 pytest tests: priority happy-path, backward compat, list/detail exposure, regenerate preserves URGENT, email sink path, iter1-5 regression smoke)",
+    "/app/test_reports/pytest/pytest_iteration6.xml (new — JUnit output)"
+  ],
+  "success_rate": {"backend": "100% (21/21 pass)", "frontend": "100% — reason-required guard, priority creation, structured summary rendering, HIGH list chip all verified"},
+  "seed_data_creation": "Reused admin@paintops.com/Admin@12345 + production@paintops.com/Prod@12345. Backend test creates 3 reports (TEST_IT6_Priority High+Labor+ChangeOrder, TEST_IT6_NoPriority no-priority, TEST_IT6_EmailSink Medium+PropertyDamage delivered@resend.dev). Regenerate-summary is called ONCE on TEST_IT6_Priority (burns 1 GPT credit). Frontend test creates one additional 'Priority Test 2' report (High + Labor Issue reason + Change Order). All 4 remain in DB and are visible on the Reports list.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "EXPO_PUBLIC_BACKEND_URL=https://project-digest-7.preview.emergentagent.com. Login testIDs are login-email-input / login-password-input / login-submit-button (NOT the -input-less variants). Reports list Create Report button = testID='create-report-button'. Priority picker testIDs: priority-level-{None|High|Medium|Low}, priority-flag-{FlagType} (exact type string with spaces & parens), priority-reason-{FlagType} (only for the 5 reason-required flags: Scope of Work Dispute, Labor Issue, Property Damage, Schedule Conflict, Delay of Payment). Detail page: priority-bar, priority-level-chip. List chip: report-priority-{id}. Frontend guard error surfaces on testID='report-error' with copy 'Please add a reason for \"<type>\".'. Backend endpoints: workday-export is GET /api/reports/{id}/workday-export (per-report); signature is PATCH /api/reports/{id}/signature (NOT POST). Regenerate burns ~1 GPT-5.4 credit per call — keep to ONE. TTS cached from prior iterations — do NOT force fresh synthesis. Run pytest with `-n 0` (pytest.ini defaults to -n 2 loadscope which breaks module-scoped state fixture).",
+  "rca_of_issue": "N/A — no functional bugs found. Self-inflicted test fixes during authoring: (1) initially used /api/workday-export (list-level) which returns 404; corrected to per-report /api/reports/{id}/workday-export. (2) initially used POST for /signature which returns 405; corrected to PATCH. Login testIDs were login-email/login-password in an early draft; actual code uses login-email-input/login-password-input — fixed in the Playwright script."
+}
