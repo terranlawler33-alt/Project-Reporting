@@ -10,6 +10,7 @@ import {
   Platform,
   ActivityIndicator,
   Modal,
+  Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Location from "expo-location";
@@ -49,6 +50,8 @@ export default function MapScreen() {
   });
   const [savingEdit, setSavingEdit] = useState(false);
   const [bookmarks, setBookmarks] = useState<any[]>([]);
+  const [confirmDeleteVisit, setConfirmDeleteVisit] = useState<any | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [form, setForm] = useState({
     latitude: "",
     longitude: "",
@@ -160,27 +163,26 @@ export default function MapScreen() {
   };
 
   const deleteVisit = (v: any) => {
+    // Alert.alert's multi-button callbacks don't fire on React Native Web —
+    // use an in-app Modal instead so destructive confirm works on every platform.
     setContextVisit(null);
-    Alert.alert(
-      "Delete visit?",
-      `Remove the pin at ${v.address || v.customer_name || "this location"}? This cannot be undone.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              await api.deleteVisit(v.id);
-              await load();
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-            } catch (e: any) {
-              Alert.alert("Delete failed", e?.message || "Please try again");
-            }
-          },
-        },
-      ],
-    );
+    setConfirmDeleteVisit(v);
+  };
+
+  const performDelete = async () => {
+    const v = confirmDeleteVisit;
+    if (!v) return;
+    setDeleting(true);
+    try {
+      await api.deleteVisit(v.id);
+      setConfirmDeleteVisit(null);
+      await load();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    } catch (e: any) {
+      Alert.alert("Delete failed", e?.message || "Please try again");
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const toggleBookmark = async (v: any) => {
@@ -935,6 +937,54 @@ export default function MapScreen() {
         </Pressable>
       </Modal>
 
+      {/* Delete confirmation modal — works on web + native (Alert.alert callbacks are unreliable on web) */}
+      <Modal
+        visible={!!confirmDeleteVisit}
+        transparent
+        animationType="fade"
+        onRequestClose={() => (!deleting ? setConfirmDeleteVisit(null) : null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.confirmSheet} testID="confirm-delete-modal">
+            <View style={styles.confirmIcon}>
+              <Ionicons name="trash" size={22} color={colors.error} />
+            </View>
+            <Text style={styles.confirmTitle}>Delete this visit?</Text>
+            <Text style={styles.confirmBody}>
+              Remove the pin at{" "}
+              <Text style={{ fontWeight: "700" }}>
+                {confirmDeleteVisit?.address ||
+                  confirmDeleteVisit?.customer_name ||
+                  "this location"}
+              </Text>
+              . This cannot be undone.
+            </Text>
+            <View style={styles.confirmActions}>
+              <Pressable
+                testID="confirm-delete-cancel"
+                onPress={() => setConfirmDeleteVisit(null)}
+                disabled={deleting}
+                style={[styles.confirmBtn, styles.confirmBtnCancel]}
+              >
+                <Text style={styles.confirmBtnCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                testID="confirm-delete-confirm"
+                onPress={performDelete}
+                disabled={deleting}
+                style={[styles.confirmBtn, styles.confirmBtnDestructive]}
+              >
+                {deleting ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.confirmBtnDestructiveText}>Delete</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* Edit visit modal */}
       <Modal
         visible={!!editingVisit}
@@ -1396,6 +1446,67 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
   },
   ctxCancelText: { color: colors.onSurfaceTertiary, fontWeight: "700", fontSize: 13 },
+  confirmSheet: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    marginHorizontal: spacing.lg,
+    padding: spacing.lg,
+    alignItems: "center",
+    minWidth: 280,
+    maxWidth: 360,
+  },
+  confirmIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "rgba(220, 38, 38, 0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: spacing.sm,
+  },
+  confirmTitle: {
+    color: colors.onSurface,
+    fontSize: 16,
+    fontWeight: "800",
+    marginBottom: spacing.xs,
+    textAlign: "center",
+  },
+  confirmBody: {
+    color: colors.onSurfaceTertiary,
+    fontSize: 13,
+    lineHeight: 18,
+    textAlign: "center",
+    marginBottom: spacing.lg,
+  },
+  confirmActions: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    width: "100%",
+  },
+  confirmBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: radius.md,
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 44,
+  },
+  confirmBtnCancel: {
+    backgroundColor: colors.surfaceTertiary,
+  },
+  confirmBtnCancelText: {
+    color: colors.onSurfaceTertiary,
+    fontWeight: "700",
+    fontSize: 14,
+  },
+  confirmBtnDestructive: {
+    backgroundColor: colors.error,
+  },
+  confirmBtnDestructiveText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 14,
+  },
 });
 
 function VisitPhoto({ path, testID }: { path: string; testID: string }) {

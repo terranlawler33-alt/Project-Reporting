@@ -1,0 +1,30 @@
+{
+  "summary": "Iteration 18 — frontend delete-visit flow verified on web preview. All 5 checks PASSED. Long-press on a map visit card opens the visit-context-menu, tapping ctx-delete opens the new confirm-delete-modal (with correct 'Delete this visit?' / 'cannot be undone' copy plus visible Cancel & Delete buttons). Cancel dismisses the modal and keeps the card. Confirm calls api.deleteVisit(), closes the modal, removes the card from the list, and the visit is confirmed gone from GET /api/visits/today. No relevant console errors — only 2 unrelated 401s (likely a stale token fetch pre-login, not related to deleteVisit). No red-screen errors.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "map.tsx",
+        "issue": "Alert is referenced in error-fallback branches (commitEdit line ~158, performDelete line ~181, toggleBookmark line ~194) but Alert is NOT imported from 'react-native'. If any of those API calls throw, the app will hit a ReferenceError ('Alert is not defined'). Reference: /app/frontend/app/(tabs)/map.tsx:158,181,194 vs import block lines 2-13."
+      }
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_18_confirm.png"],
+  "action_items": [
+    "Add `Alert` to the react-native import in /app/frontend/app/(tabs)/map.tsx (or replace the remaining Alert.alert calls with the same in-app modal pattern) to prevent ReferenceError on API failures in edit/delete/bookmark error paths."
+  ],
+  "critical_code_review_comments": [
+    "map.tsx is ~1520 lines — approaching the 700-line soft limit; consider splitting the modals (context menu, confirm-delete, edit-visit, attach-project, visit-detail) into their own components for readability.",
+    "Delete confirm modal implementation is correct and platform-safe on web."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a", "frontend": "100%"},
+  "seed_data_creation": "Created one ephemeral visit `DELETE_ME_iter18` via POST /api/visits and deleted it during the test — no leftover data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Delete-visit fix verified. If Alert import bug is fixed by main agent, also verify by forcing a failed patchVisit/deleteVisit (e.g. bad id) to ensure the fallback UI shows a proper message instead of throwing.",
+  "rca_of_issue": "Original bug: Alert.alert multi-button destructive callback does not fire on React Native Web, so 'Delete' button in Alert dialog silently no-op'd. Fix (verified working): replaced Alert.alert confirm with in-app Modal (`confirm-delete-modal`) using explicit Pressable buttons wired directly to performDelete() → api.deleteVisit(). Delete now works on web and native."
+}
