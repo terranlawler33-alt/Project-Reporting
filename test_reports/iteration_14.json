@@ -1,0 +1,38 @@
+{
+  "summary": "Frontend-only verification for iteration 14 (Summar-Eeze rename + 12-hour time format). All 3 numbered checks PASS. Login screen displays 'Summar-Eeze' brand heading (no 'PaintOps Daily' anywhere). Hourly forecast sheet renders 12h times: hourly-best-time='6:00 PM' matches regex, hourly-row-0..3 all contain 'PM', no 24h substrings (13:00-23:00) present. No key-prop warnings in console.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "shadow* style props", "issue": "Console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' — non-blocking but should migrate to boxShadow. Not part of this iteration scope."}
+    ]
+  },
+  "test_results": {
+    "check1_summareze_visible": true,
+    "check1_paintops_absent": true,
+    "check2_best_time_regex_match": true,
+    "check2_best_time_value": "6:00 PM",
+    "check2_row0_ampm": true,
+    "check2_row0_text": "6:00 PM ... Overcast 66°F 1%",
+    "check2_row3_ampm": true,
+    "check2_row3_text": "9:00 PM ... Overcast 63°F 0%",
+    "check2_no_24h_format": true,
+    "check3_no_key_warnings": true
+  },
+  "screenshots": [
+    "/app/test_reports/iteration_14_login.png",
+    "/app/test_reports/iteration_14_sheet.png"
+  ],
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a", "frontend": "100%"},
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 14 visual changes verified end-to-end. Login brand text renders as 'Summar-Eeze'. HourlyForecastSheet uses 12-hour AM/PM format for best-time chip, list rows, and (per code) SVG labels. No React key warnings observed.",
+  "rca_of_issue": "N/A — no bugs found."
+}

@@ -43,6 +43,33 @@ function weatherIcon(code?: number | null): any {
   return "partly-sunny";
 }
 
+// Convert backend "HH:MM" (24h) → "h:MM AM/PM" (US 12h) for weather displays.
+function to12h(label: string | null | undefined): string {
+  if (!label) return "";
+  const m = /^(\d{1,2}):(\d{2})/.exec(label);
+  if (!m) return label;
+  let h = parseInt(m[1], 10);
+  const mm = m[2];
+  const period = h >= 12 ? "PM" : "AM";
+  h = h % 12;
+  if (h === 0) h = 12;
+  return `${h}:${mm} ${period}`;
+}
+
+// A more compact hour-only variant used inside the chart labels where width is tight.
+function to12hShort(label: string | null | undefined): string {
+  if (!label) return "";
+  const m = /^(\d{1,2}):(\d{2})/.exec(label);
+  if (!m) return label;
+  let h = parseInt(m[1], 10);
+  const mm = m[2];
+  const period = h >= 12 ? "p" : "a";
+  h = h % 12;
+  if (h === 0) h = 12;
+  if (mm === "00") return `${h}${period}`;
+  return `${h}:${mm}${period}`;
+}
+
 export function HourlyForecastSheet({
   visible,
   onClose,
@@ -193,7 +220,7 @@ export function HourlyForecastSheet({
                   </View>
                   <View style={styles.bestBody}>
                     <Text style={styles.bestTime} testID="hourly-best-time">
-                      {bestPoint.hour_label}
+                      {to12h(bestPoint.hour_label)}
                     </Text>
                     <Text style={styles.bestMeta}>
                       {bestPoint.temperature_f != null
@@ -305,7 +332,7 @@ export function HourlyForecastSheet({
                           fontWeight="600"
                           textAnchor="middle"
                         >
-                          {p.hour_label}
+                          {to12hShort(p.hour_label)}
                         </SvgText>
                       </Fragment>
                     );
@@ -329,7 +356,7 @@ export function HourlyForecastSheet({
                       {isBest ? (
                         <Ionicons name="star" size={12} color="#F59E0B" style={{ position: "absolute", left: 4, top: 12 }} />
                       ) : null}
-                      <Text style={[styles.rowHour, isBest && styles.rowBestText]}>{p.hour_label}</Text>
+                      <Text style={[styles.rowHour, isBest && styles.rowBestText]}>{to12h(p.hour_label)}</Text>
                       <Ionicons name={weatherIcon(p.weather_code)} size={18} color={isBest ? "#F59E0B" : colors.brandPrimary} />
                       <Text style={styles.rowCond} numberOfLines={1}>
                         {p.conditions || "—"}
@@ -445,7 +472,7 @@ const styles = StyleSheet.create({
   },
   rowBestText: { color: "#B45309" },
   rowHour: {
-    width: 52,
+    width: 72,
     color: colors.onSurface,
     fontSize: 13,
     fontWeight: "700",

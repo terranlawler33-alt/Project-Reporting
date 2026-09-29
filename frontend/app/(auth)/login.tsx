@@ -51,7 +51,7 @@ export default function LoginScreen() {
           <View style={styles.logoIcon} testID="app-logo">
             <Ionicons name="color-palette" size={32} color={colors.onBrandPrimary} />
           </View>
-          <Text style={styles.brandName}>PaintOps Daily</Text>
+          <Text style={styles.brandName}>Summar-Eeze</Text>
           <Text style={styles.tagline}>Field ops. AI summaries. One report.</Text>
         </View>
 
