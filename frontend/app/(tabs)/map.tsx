@@ -12,12 +12,17 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Location from "expo-location";
+import * as ImagePicker from "expo-image-picker";
+import * as Network from "expo-network";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import * as Haptics from "expo-haptics";
 import { useFocusEffect } from "expo-router";
+import { Image } from "expo-image";
 import { api } from "@/src/api";
 import { colors, spacing, radius } from "@/src/theme";
 import { PaintOpsMap } from "@/src/components/PaintOpsMap";
+import { enqueueAction } from "@/src/offline";
+import { uploadVisitPhoto, authedPhotoUrl } from "@/src/photos";
 
 export default function MapScreen() {
   const insets = useSafeAreaInsets();
@@ -28,6 +33,7 @@ export default function MapScreen() {
   const [saving, setSaving] = useState(false);
   const [gpsLoading, setGpsLoading] = useState(false);
   const [showCustomerPicker, setShowCustomerPicker] = useState(false);
+  const [pendingPhotos, setPendingPhotos] = useState<string[]>([]);
   const [form, setForm] = useState({
     latitude: "",
     longitude: "",
@@ -89,21 +95,66 @@ export default function MapScreen() {
     if (!form.latitude || !form.longitude) return;
     setSaving(true);
     try {
-      await api.createVisit({
+      const payload = {
         latitude: parseFloat(form.latitude),
         longitude: parseFloat(form.longitude),
         customer_name: form.customer_name || null,
         address: form.address || null,
         project_code: form.project_code || null,
         notes: form.notes || null,
-      });
+      };
+      let net = { isConnected: true } as any;
+      try {
+        net = await Network.getNetworkStateAsync();
+      } catch {}
+      if (!net.isConnected) {
+        await enqueueAction("visit", "/visits", payload);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      } else {
+        const visit = await api.createVisit(payload);
+        // Upload any pending photos
+        for (const uri of pendingPhotos) {
+          try {
+            await uploadVisitPhoto(visit.id, uri);
+          } catch {}
+        }
+      }
       setForm({ latitude: "", longitude: "", customer_name: "", address: "", project_code: "", notes: "" });
+      setPendingPhotos([]);
       setShowForm(false);
       await load();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } finally {
       setSaving(false);
     }
+  };
+
+  const pickPhoto = async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) return;
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        quality: 0.7,
+      });
+      if (!res.canceled && res.assets?.[0]?.uri && pendingPhotos.length < 3) {
+        setPendingPhotos((p) => [...p, res.assets[0].uri]);
+      }
+    } catch {}
+  };
+
+  const takePhoto = async () => {
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) return;
+      const res = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        quality: 0.7,
+      });
+      if (!res.canceled && res.assets?.[0]?.uri && pendingPhotos.length < 3) {
+        setPendingPhotos((p) => [...p, res.assets[0].uri]);
+      }
+    } catch {}
   };
 
   return (
@@ -237,6 +288,36 @@ export default function MapScreen() {
               multiline
             />
 
+            <Text style={styles.photosLabel}>
+              Photos ({pendingPhotos.length}/3)
+            </Text>
+            <View style={styles.photosRow}>
+              {pendingPhotos.map((uri, idx) => (
+                <View key={uri + idx} style={styles.thumbWrap} testID={`pending-photo-${idx}`}>
+                  <Image source={{ uri }} style={styles.thumb} contentFit="cover" />
+                  <Pressable
+                    testID={`remove-photo-${idx}`}
+                    onPress={() => setPendingPhotos((p) => p.filter((_, i) => i !== idx))}
+                    style={styles.thumbRemove}
+                  >
+                    <Ionicons name="close" size={12} color="#fff" />
+                  </Pressable>
+                </View>
+              ))}
+              {pendingPhotos.length < 3 && (
+                <>
+                  <Pressable testID="visit-take-photo" onPress={takePhoto} style={styles.photoBtn}>
+                    <Ionicons name="camera" size={20} color={colors.brandPrimary} />
+                    <Text style={styles.photoBtnText}>Camera</Text>
+                  </Pressable>
+                  <Pressable testID="visit-pick-photo" onPress={pickPhoto} style={styles.photoBtn}>
+                    <Ionicons name="images" size={20} color={colors.brandPrimary} />
+                    <Text style={styles.photoBtnText}>Library</Text>
+                  </Pressable>
+                </>
+              )}
+            </View>
+
             <Pressable
               testID="save-visit"
               onPress={saveVisit}
@@ -283,6 +364,15 @@ export default function MapScreen() {
                   {new Date(v.timestamp).toLocaleTimeString()}
                   {v.ended_at ? ` → ${new Date(v.ended_at).toLocaleTimeString()}` : " · active"}
                 </Text>
+                {v.photos?.length ? (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: spacing.xs }}>
+                    <View style={{ flexDirection: "row", gap: 4 }}>
+                      {v.photos.map((p: string, i: number) => (
+                        <VisitPhoto key={p + i} path={p} testID={`visit-photo-${v.id}-${i}`} />
+                      ))}
+                    </View>
+                  </ScrollView>
+                ) : null}
               </View>
               {!v.ended_at && (
                 <Pressable
@@ -448,4 +538,47 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   endBtnText: { color: colors.onSurface, fontWeight: "700", fontSize: 12 },
+  photosLabel: { color: colors.onSurfaceTertiary, fontSize: 12, fontWeight: "700", marginTop: spacing.sm },
+  photosRow: { flexDirection: "row", gap: spacing.sm, flexWrap: "wrap" },
+  thumbWrap: { width: 72, height: 72, borderRadius: radius.md, overflow: "hidden", position: "relative" },
+  thumb: { width: "100%", height: "100%" },
+  thumbRemove: {
+    position: "absolute",
+    top: 2,
+    right: 2,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    borderRadius: 10,
+    width: 20,
+    height: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  photoBtn: {
+    width: 72,
+    height: 72,
+    borderRadius: radius.md,
+    backgroundColor: colors.brandTertiary,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 2,
+  },
+  photoBtnText: { color: colors.onBrandTertiary, fontSize: 10, fontWeight: "700" },
 });
+
+function VisitPhoto({ path, testID }: { path: string; testID: string }) {
+  const [uri, setUri] = useState<string | null>(null);
+  useEffect(() => {
+    authedPhotoUrl(path).then(setUri);
+  }, [path]);
+  if (!uri) {
+    return <View style={{ width: 60, height: 60, borderRadius: 8, backgroundColor: colors.surfaceTertiary }} testID={testID} />;
+  }
+  return (
+    <Image
+      testID={testID}
+      source={{ uri }}
+      style={{ width: 60, height: 60, borderRadius: 8 }}
+      contentFit="cover"
+    />
+  );
+}

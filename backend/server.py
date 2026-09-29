@@ -19,14 +19,20 @@ import jwt
 import httpx
 import bcrypt
 import tempfile
+import secrets
+import requests
+import base64 as _b64
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, status, Request, APIRouter, UploadFile, File
+from fastapi import Depends, FastAPI, HTTPException, status, Request, APIRouter, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, EmailStr, Field
 from motor.motor_asyncio import AsyncIOMotorClient
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 from emergentintegrations.llm.openai.speech_to_text import OpenAISpeechToText
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -40,6 +46,10 @@ EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
 EMERGENT_EMAIL_KEY = os.environ["EMERGENT_EMAIL_KEY"]
 EMAIL_FROM_NAME = os.environ["EMAIL_FROM_NAME"]
 EMAIL_BASE_URL = "https://integrations.emergentagent.com"
+PUSH_BASE_URL = "https://integrations.emergentagent.com"
+EMERGENT_PUSH_KEY = os.environ.get("EMERGENT_PUSH_KEY", "placeholder")
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")
 ALGORITHM = "HS256"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -111,6 +121,7 @@ class LocationVisit(LocationVisitCreate):
     user_id: str
     timestamp: str
     ended_at: Optional[str] = None
+    photos: List[str] = []
 
 
 class BreakCreate(BaseModel):
@@ -187,6 +198,10 @@ class DailyReport(BaseModel):
     email_sent_to: List[str] = []
     created_at: str
     signature: Optional[dict] = None
+    archived: bool = False
+    archived_at: Optional[str] = None
+    deleted_at: Optional[str] = None
+    public_token: Optional[str] = None
 
 
 # ---------- Auth helpers ----------
@@ -356,7 +371,22 @@ async def lifespan(app: FastAPI):
         }
         await app.db.users.insert_one(admin_doc)
         logger.info(f"Seeded admin user: {admin_email}")
+
+    # Start APScheduler (must be inside lifespan since @app.on_event is ignored when lifespan is set)
+    scheduler = AsyncIOScheduler()
+    app.scheduler = scheduler
+    scheduler.start()
+    try:
+        await _reschedule_digest(app)
+    except Exception as e:
+        logger.error(f"Scheduler bootstrap failed: {e}")
+
     yield
+
+    try:
+        scheduler.shutdown(wait=False)
+    except Exception:
+        pass
     client.close()
 
 
@@ -733,6 +763,17 @@ async def create_report(data: ReportCreate, request: Request, user: dict = Depen
     await request.app.db.reports.insert_one(report.copy())
     report.pop("_id", None)
 
+    # Push notification to management (owner/ops/admin) — fire and forget
+    try:
+        await _notify_management(
+            request.app,
+            title=f"New report — {user['name']}",
+            message=(data.highlights or ai_summary)[:120],
+            action_url=f"/report/{report['id']}",
+        )
+    except Exception as e:
+        logger.warning(f"Push (report) failed: {e}")
+
     # Send emails to recipients
     if data.recipient_emails:
         sent = []
@@ -769,12 +810,15 @@ def _report_email_html(report: dict) -> str:
 
 
 @api.get("/reports", response_model=List[DailyReport])
-async def list_reports(request: Request, user: dict = Depends(current_user)):
+async def list_reports(request: Request, user: dict = Depends(current_user), include_archived: bool = False):
     FULL_ROLES = {Role.OWNER.value, Role.OPERATIONS.value, Role.PROJECT_MANAGER.value}
     if user["role"] in FULL_ROLES or user.get("is_admin"):
-        query = {}
+        query: dict = {}
     else:
         query = {"user_id": user["id"]}
+    query["deleted_at"] = None
+    if not include_archived:
+        query["$or"] = [{"archived": False}, {"archived": {"$exists": False}}]
     docs = await request.app.db.reports.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
     return [DailyReport(**d) for d in docs]
 
@@ -997,6 +1041,16 @@ async def weekly_digest(data: DigestRequest, request: Request, admin: dict = Dep
         digest_doc["email_sent_to"] = sent
 
     digest_doc.pop("_id", None)
+    # Push to management team about the fresh digest
+    try:
+        await _notify_management(
+            request.app,
+            title="Weekly digest ready",
+            message=f"{len(reports)} reports rolled up — check your inbox.",
+            action_url="/(tabs)/reports",
+        )
+    except Exception as e:
+        logger.warning(f"Push (digest) failed: {e}")
     return digest_doc
 
 
@@ -1020,7 +1074,496 @@ async def add_signature(report_id: str, data: SignaturePayload, request: Request
         "signed_at": datetime.now(timezone.utc).isoformat(),
     }
     await request.app.db.reports.update_one({"id": report_id}, {"$set": {"signature": signature}})
+    # Fire push notification to the report author
+    try:
+        author_id = doc["user_id"]
+        if author_id and author_id != user["id"]:
+            await send_push(
+                recipients=[author_id],
+                data={
+                    "title": "Customer signed off",
+                    "message": f"{data.customer_name} signed the report for {doc.get('project_name') or doc['report_date']}.",
+                    "action_url": f"/report/{report_id}",
+                },
+            )
+    except Exception as e:
+        logger.warning(f"Push (signature) failed: {e}")
     return {"ok": True, "signature": signature}
+
+
+# ---------- Push Notifications (Emergent managed) ----------
+class RegisterPushBody(BaseModel):
+    user_id: str
+    platform: str
+    device_token: str
+
+
+@api.post("/register-push", status_code=201)
+async def register_push(body: RegisterPushBody, request: Request, user: dict = Depends(current_user)):
+    if body.user_id != user["id"] and not user.get("is_admin"):
+        raise HTTPException(403, "Cannot register token for another user")
+    # Persist a lightweight record locally (helps admin visibility only)
+    await request.app.db.push_tokens.update_one(
+        {"user_id": body.user_id, "device_token": body.device_token},
+        {"$set": {
+            "user_id": body.user_id,
+            "platform": body.platform,
+            "device_token": body.device_token,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{PUSH_BASE_URL}/api/v1/push/users/register",
+                headers={"X-Push-Key": EMERGENT_PUSH_KEY},
+                json=body.model_dump(),
+            )
+        if resp.status_code == 401:
+            logger.warning("EMERGENT_PUSH_KEY missing or invalid; push registration is a no-op in preview")
+            return {"status": "registered", "note": "push key missing in preview"}
+        if resp.status_code >= 500:
+            raise HTTPException(502, "Push provider unavailable")
+        resp.raise_for_status()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Push register upstream failed (non-blocking): {e}")
+    return {"status": "registered"}
+
+
+async def send_push(recipients: List[str], data: dict, idempotency_key: Optional[str] = None) -> None:
+    recipients = [r for r in recipients if r]
+    if not recipients:
+        return
+    recipients = recipients[:100]
+    if "title" not in data or "message" not in data:
+        raise ValueError("data must include title and message")
+    payload: dict = {"recipients": recipients, "data": data}
+    if idempotency_key:
+        payload["$idempotency_key"] = idempotency_key
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{PUSH_BASE_URL}/api/v1/push/trigger",
+                headers={"X-Push-Key": EMERGENT_PUSH_KEY},
+                json=payload,
+            )
+        if resp.status_code == 401:
+            logger.warning("EMERGENT_PUSH_KEY invalid; push trigger skipped")
+            return
+        if resp.status_code >= 500:
+            logger.warning(f"Push trigger 5xx: {resp.text[:200]}")
+            return
+        resp.raise_for_status()
+    except Exception as e:
+        logger.warning(f"send_push failed (non-blocking): {e}")
+
+
+async def _notify_management(app: FastAPI, title: str, message: str, action_url: Optional[str] = None):
+    role_targets = {Role.OWNER.value, Role.OPERATIONS.value}
+    docs = await app.db.users.find(
+        {"$or": [{"role": {"$in": list(role_targets)}}, {"is_admin": True}]},
+        {"_id": 0, "id": 1},
+    ).to_list(500)
+    user_ids = [d["id"] for d in docs]
+    data = {"title": title, "message": message}
+    if action_url:
+        data["action_url"] = action_url
+    await send_push(user_ids, data)
+
+
+# ---------- ElevenLabs TTS ----------
+@api.post("/reports/{report_id}/tts")
+async def report_tts(report_id: str, request: Request, user: dict = Depends(current_user)):
+    doc = await request.app.db.reports.find_one({"id": report_id, "deleted_at": None}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Report not found")
+    FULL_ROLES = {Role.OWNER.value, Role.OPERATIONS.value, Role.PROJECT_MANAGER.value}
+    if user["role"] not in FULL_ROLES and not user.get("is_admin") and doc["user_id"] != user["id"]:
+        raise HTTPException(403, "Not allowed")
+    if not ELEVENLABS_API_KEY:
+        raise HTTPException(503, "ElevenLabs API key not configured")
+    # Trim summary to something reasonable for TTS budget
+    text = (doc.get("ai_summary") or "").strip()
+    if not text:
+        raise HTTPException(400, "Report has no summary to read")
+    text = text[:2500]
+
+    import hashlib
+    summary_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+    cached = doc.get("tts_cache")
+    if cached and cached.get("hash") == summary_hash and cached.get("audio_data_url"):
+        return {"audio_data_url": cached["audio_data_url"], "bytes": cached.get("bytes", 0), "cached": True}
+
+    def _synthesize() -> bytes:
+        from elevenlabs.client import ElevenLabs
+        client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+        stream = client.text_to_speech.convert(
+            text=text,
+            voice_id=ELEVENLABS_VOICE_ID,
+            model_id="eleven_multilingual_v2",
+            output_format="mp3_44100_128",
+        )
+        chunks = b""
+        for c in stream:
+            if c:
+                chunks += c
+        return chunks
+
+    try:
+        audio = await run_in_threadpool(_synthesize)
+    except Exception as e:
+        detail = ""
+        body = getattr(e, "body", None)
+        if isinstance(body, dict):
+            d = body.get("detail")
+            if isinstance(d, dict):
+                detail = d.get("message") or ""
+        status = getattr(e, "status_code", None)
+        logger.error(f"ElevenLabs TTS failed status={status} detail={detail!r}")
+        if status == 401 or "invalid api key" in detail.lower():
+            raise HTTPException(502, "ElevenLabs API key invalid — update ELEVENLABS_API_KEY in backend/.env")
+        raise HTTPException(502, f"TTS failed: {detail or str(e)[:120]}")
+    b64 = _b64.b64encode(audio).decode()
+    audio_data_url = f"data:audio/mpeg;base64,{b64}"
+    await request.app.db.reports.update_one(
+        {"id": report_id},
+        {"$set": {"tts_cache": {"hash": summary_hash, "audio_data_url": audio_data_url, "bytes": len(audio)}}},
+    )
+    return {"audio_data_url": audio_data_url, "bytes": len(audio), "cached": False}
+
+
+# ---------- Object Storage helpers (Emergent managed) ----------
+STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
+STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
+APP_NAME = "paintops-daily"
+_storage_key: Optional[str] = None
+
+
+def _init_storage() -> Optional[str]:
+    global _storage_key
+    if _storage_key:
+        return _storage_key
+    try:
+        resp = requests.post(
+            f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_LLM_KEY}, timeout=30
+        )
+        if resp.status_code >= 400:
+            logger.error(f"Storage init {resp.status_code}: {resp.text[:200]}")
+            return None
+        _storage_key = resp.json()["storage_key"]
+        return _storage_key
+    except Exception as e:
+        logger.error(f"Storage init exception: {e}")
+        return None
+
+
+def _put_object(path: str, data: bytes, content_type: str) -> Optional[dict]:
+    global _storage_key
+    key = _init_storage()
+    if not key:
+        return None
+    for attempt in range(2):
+        resp = requests.put(
+            f"{STORAGE_URL}/objects/{path}",
+            headers={"X-Storage-Key": key, "Content-Type": content_type},
+            data=data,
+            timeout=120,
+        )
+        if resp.status_code == 503 and attempt == 0:
+            _storage_key = None
+            key = _init_storage()
+            if not key:
+                return None
+            continue
+        if resp.status_code >= 400:
+            logger.error(f"Storage put {resp.status_code}: {resp.text[:200]}")
+            return None
+        return resp.json()
+    return None
+
+
+def _get_object(path: str) -> Optional[tuple]:
+    global _storage_key
+    key = _init_storage()
+    if not key:
+        return None
+    for attempt in range(2):
+        resp = requests.get(
+            f"{STORAGE_URL}/objects/{path}",
+            headers={"X-Storage-Key": key},
+            timeout=60,
+        )
+        if resp.status_code == 503 and attempt == 0:
+            _storage_key = None
+            key = _init_storage()
+            if not key:
+                return None
+            continue
+        if resp.status_code >= 400:
+            return None
+        return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+    return None
+
+
+# ---------- Photo Attachments ----------
+@api.post("/visits/{visit_id}/photos")
+async def upload_visit_photo(
+    visit_id: str,
+    request: Request,
+    photo: UploadFile = File(...),
+    user: dict = Depends(current_user),
+):
+    visit = await request.app.db.visits.find_one({"id": visit_id, "user_id": user["id"]}, {"_id": 0})
+    if not visit:
+        raise HTTPException(404, "Visit not found")
+    if len(visit.get("photos", [])) >= 3:
+        raise HTTPException(400, "Max 3 photos per visit")
+    data = await photo.read()
+    if len(data) == 0:
+        raise HTTPException(400, "Empty photo")
+    if len(data) > 8 * 1024 * 1024:
+        raise HTTPException(413, "Photo must be <= 8 MB")
+    ext = "jpg"
+    if photo.filename and "." in photo.filename:
+        ext = photo.filename.rsplit(".", 1)[-1].lower()
+    if ext not in ("jpg", "jpeg", "png", "webp", "heic"):
+        ext = "jpg"
+    obj_path = f"{APP_NAME}/uploads/{user['id']}/{uuid4()}.{ext}"
+    result = await run_in_threadpool(_put_object, obj_path, data, photo.content_type or f"image/{ext}")
+    if not result:
+        raise HTTPException(502, "Photo upload failed")
+    await request.app.db.visits.update_one(
+        {"id": visit_id}, {"$push": {"photos": obj_path}}
+    )
+    return {"ok": True, "path": obj_path}
+
+
+@api.get("/files/{path:path}")
+async def get_file(path: str, request: Request, token: Optional[str] = None):
+    # Auth: either Bearer header (via current_user) or a short-lived token in ?token=
+    auth_ok = False
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            claims = jwt.decode(auth[7:], JWT_SECRET, algorithms=[ALGORITHM], issuer=JWT_ISSUER)
+            if claims.get("sub"):
+                auth_ok = True
+        except Exception:
+            pass
+    if not auth_ok and token:
+        try:
+            claims = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM], issuer=JWT_ISSUER)
+            if claims.get("sub"):
+                auth_ok = True
+        except Exception:
+            pass
+    if not auth_ok:
+        raise HTTPException(401, "Auth required")
+    result = await run_in_threadpool(_get_object, path)
+    if not result:
+        raise HTTPException(404, "File not found")
+    content, content_type = result
+    return Response(content=content, media_type=content_type)
+
+
+# ---------- Report Edit / Archive / Delete / Portal Link ----------
+class ReportPatch(BaseModel):
+    project_name: Optional[str] = None
+    project_code: Optional[str] = None
+    highlights: Optional[str] = None
+    delays: Optional[str] = None
+    change_orders: Optional[str] = None
+    material_notes: Optional[str] = None
+
+
+async def _report_owner_check(request: Request, report_id: str, user: dict) -> dict:
+    doc = await request.app.db.reports.find_one({"id": report_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Report not found")
+    FULL_ROLES = {Role.OWNER.value, Role.OPERATIONS.value, Role.PROJECT_MANAGER.value}
+    if user["role"] not in FULL_ROLES and not user.get("is_admin") and doc["user_id"] != user["id"]:
+        raise HTTPException(403, "Not allowed")
+    return doc
+
+
+@api.patch("/reports/{report_id}", response_model=DailyReport)
+async def edit_report(report_id: str, patch: ReportPatch, request: Request, user: dict = Depends(current_user)):
+    await _report_owner_check(request, report_id, user)
+    updates = {k: v for k, v in patch.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(400, "No fields to update")
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await request.app.db.reports.update_one({"id": report_id}, {"$set": updates})
+    doc = await request.app.db.reports.find_one({"id": report_id}, {"_id": 0})
+    return DailyReport(**doc)
+
+
+@api.post("/reports/{report_id}/archive")
+async def archive_report(report_id: str, request: Request, user: dict = Depends(current_user)):
+    await _report_owner_check(request, report_id, user)
+    await request.app.db.reports.update_one(
+        {"id": report_id},
+        {"$set": {"archived": True, "archived_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True}
+
+
+@api.post("/reports/{report_id}/unarchive")
+async def unarchive_report(report_id: str, request: Request, user: dict = Depends(current_user)):
+    await _report_owner_check(request, report_id, user)
+    await request.app.db.reports.update_one(
+        {"id": report_id}, {"$set": {"archived": False, "archived_at": None}},
+    )
+    return {"ok": True}
+
+
+@api.delete("/reports/{report_id}")
+async def delete_report(report_id: str, request: Request, user: dict = Depends(current_user)):
+    await _report_owner_check(request, report_id, user)
+    # Soft delete per data management rules
+    await request.app.db.reports.update_one(
+        {"id": report_id}, {"$set": {"deleted_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True}
+
+
+@api.post("/reports/{report_id}/portal-link")
+async def create_portal_link(report_id: str, request: Request, user: dict = Depends(current_user)):
+    doc = await _report_owner_check(request, report_id, user)
+    token = doc.get("public_token")
+    if not token:
+        token = secrets.token_urlsafe(24)
+        await request.app.db.reports.update_one({"id": report_id}, {"$set": {"public_token": token}})
+    return {"token": token}
+
+
+@api.delete("/reports/{report_id}/portal-link")
+async def revoke_portal_link(report_id: str, request: Request, user: dict = Depends(current_user)):
+    await _report_owner_check(request, report_id, user)
+    await request.app.db.reports.update_one({"id": report_id}, {"$set": {"public_token": None}})
+    return {"ok": True}
+
+
+@api.get("/public/reports/{token}")
+async def public_report(token: str, request: Request):
+    doc = await request.app.db.reports.find_one({"public_token": token, "deleted_at": None}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Not found")
+    # Return a limited public view
+    return {
+        "report_date": doc["report_date"],
+        "author_name": doc["author_name"],
+        "author_role": doc["author_role"],
+        "project_name": doc.get("project_name"),
+        "project_code": doc.get("project_code"),
+        "ai_summary": doc["ai_summary"],
+        "signature": doc.get("signature"),
+        "created_at": doc["created_at"],
+    }
+
+
+# ---------- Digest Scheduler ----------
+class DigestScheduleCreate(BaseModel):
+    enabled: bool
+    hour: int = Field(ge=0, le=23, default=8)
+    minute: int = Field(ge=0, le=59, default=0)
+    day_of_week: str = "mon"  # apscheduler cron day: mon..sun
+    recipient_emails: List[EmailStr]
+
+
+@api.get("/digest/schedule")
+async def get_schedule(request: Request, _: dict = Depends(admin_only)):
+    doc = await request.app.db.digest_schedule.find_one({"id": "singleton"}, {"_id": 0})
+    return doc or {"enabled": False, "hour": 8, "minute": 0, "day_of_week": "mon", "recipient_emails": []}
+
+
+@api.put("/digest/schedule")
+async def set_schedule(data: DigestScheduleCreate, request: Request, admin: dict = Depends(admin_only)):
+    doc = {
+        "id": "singleton",
+        "enabled": data.enabled,
+        "hour": data.hour,
+        "minute": data.minute,
+        "day_of_week": data.day_of_week,
+        "recipient_emails": [str(e) for e in data.recipient_emails],
+        "updated_by": admin["id"],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await request.app.db.digest_schedule.update_one({"id": "singleton"}, {"$set": doc}, upsert=True)
+    await _reschedule_digest(request.app)
+    return {"ok": True, "schedule": doc}
+
+
+async def _run_scheduled_digest(app: FastAPI):
+    schedule = await app.db.digest_schedule.find_one({"id": "singleton"}, {"_id": 0})
+    if not schedule or not schedule.get("enabled") or not schedule.get("recipient_emails"):
+        return
+    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    reports = await app.db.reports.find(
+        {"created_at": {"$gte": week_ago}, "deleted_at": None}, {"_id": 0}
+    ).sort("created_at", -1).to_list(500)
+    if not reports:
+        return
+    total_visits = sum(len(r.get("visits", [])) for r in reports)
+    total_breaks = sum(len(r.get("breaks", [])) for r in reports)
+    total_sms = sum(len(r.get("sms_logs", [])) for r in reports)
+    lines = [f"Weekly Digest (auto): {len(reports)} reports, {total_visits} visits, {total_breaks} breaks, {total_sms} comms.", ""]
+    for r in reports[:20]:
+        lines.append(f"[{r['report_date']}] {r['author_name']} — {r.get('project_name') or ''}")
+        lines.append(r["ai_summary"][:500])
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"digest-auto-{uuid4()}",
+            system_message="Weekly executive digest for a painting operations owner. Concise, headed sections, 300-500 words.",
+        ).with_model("openai", "gpt-5.4")
+        digest_text = await chat.send_message(UserMessage(text="\n".join(lines)))
+        digest_text = digest_text if isinstance(digest_text, str) else str(digest_text)
+    except Exception as e:
+        logger.error(f"Auto digest AI failed: {e}")
+        digest_text = "\n".join(lines)
+    subject = f"Weekly Ops Digest — {datetime.now(timezone.utc).date().isoformat()}"
+    summary_html = escape(digest_text).replace("\n", "<br>")
+    html = (
+        f'<table role="presentation" width="100%" style="font-family:Arial,sans-serif">'
+        f'<tr><td style="padding:24px">'
+        f'<h2 style="margin:0 0 12px 0;color:#111827">Weekly Ops Digest (Auto)</h2>'
+        f'<div style="color:#111827;line-height:1.6">{summary_html}</div>'
+        f'<p style="font-size:12px;color:#6B7280;margin-top:16px">Sent by {escape(EMAIL_FROM_NAME)}.</p>'
+        f'</td></tr></table>'
+    )
+    sent = []
+    for email in schedule["recipient_emails"]:
+        eid = await send_email(to=email, subject=subject, html=html)
+        if eid:
+            sent.append(email)
+    await app.db.digests.insert_one({
+        "id": str(uuid4()),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "text": digest_text,
+        "email_sent_to": sent,
+        "report_ids": [r["id"] for r in reports],
+        "auto": True,
+    })
+
+
+async def _reschedule_digest(app: FastAPI):
+    schedule = await app.db.digest_schedule.find_one({"id": "singleton"}, {"_id": 0})
+    scheduler: AsyncIOScheduler = app.scheduler
+    try:
+        scheduler.remove_job("weekly-digest")
+    except Exception:
+        pass
+    if schedule and schedule.get("enabled"):
+        trigger = CronTrigger(
+            day_of_week=schedule.get("day_of_week", "mon"),
+            hour=schedule.get("hour", 8),
+            minute=schedule.get("minute", 0),
+        )
+        scheduler.add_job(_run_scheduled_digest, trigger, args=[app], id="weekly-digest", replace_existing=True)
 
 
 # Include the router (with the new routes) — must be after all routes are defined

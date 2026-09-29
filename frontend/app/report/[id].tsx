@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, Platform, TextInput } from "react-native";
+import { View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, Platform, TextInput, Share, Alert } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import Signature from "react-native-signature-canvas";
 import { Image } from "expo-image";
+import * as Clipboard from "expo-clipboard";
+import { useAudioPlayer, useAudioPlayerStatus, setAudioModeAsync } from "expo-audio";
 import { api } from "@/src/api";
 import { getToken } from "@/src/auth/storage";
+import { authedPhotoUrl } from "@/src/photos";
 import { colors, spacing, radius } from "@/src/theme";
 
 export default function ReportDetail() {
@@ -18,7 +21,11 @@ export default function ReportDetail() {
   const [showSign, setShowSign] = useState(false);
   const [customerName, setCustomerName] = useState("");
   const [saving, setSaving] = useState(false);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [loadingTts, setLoadingTts] = useState(false);
   const sigRef = useRef<any>(null);
+  const player = useAudioPlayer(audioUrl ?? null);
+  const playerStatus = useAudioPlayerStatus(player);
 
   const reload = async () => {
     if (!id) return;
@@ -64,6 +71,74 @@ export default function ReportDetail() {
     }
   };
 
+  const onShare = async () => {
+    if (!report) return;
+    let link = report.public_token
+      ? `${process.env.EXPO_PUBLIC_BACKEND_URL}/api/public/reports/${report.public_token}`
+      : "";
+    if (!link) {
+      try {
+        const r = await api.createPortalLink(id!);
+        link = `${process.env.EXPO_PUBLIC_BACKEND_URL}/api/public/reports/${r.token}`;
+        await reload();
+      } catch {}
+    }
+    const body =
+      `${report.project_name || report.project_code || "Daily Report"} — ${report.report_date}\n` +
+      `From ${report.author_name} (${report.author_role})\n\n` +
+      `${report.ai_summary}\n\n` +
+      (link ? `View online: ${link}\n` : "");
+    try {
+      await Share.share({ message: body, title: `Daily Report — ${report.report_date}` });
+    } catch {}
+  };
+
+  const generatePortalLink = async () => {
+    try {
+      await api.createPortalLink(id!);
+      await reload();
+    } catch {}
+  };
+
+  const revokePortalLink = async () => {
+    try {
+      await api.revokePortalLink(id!);
+      await reload();
+    } catch {}
+  };
+
+  const copyPortalLink = async () => {
+    if (!report?.public_token) return;
+    const link = `${process.env.EXPO_PUBLIC_BACKEND_URL}/api/public/reports/${report.public_token}`;
+    await Clipboard.setStringAsync(link);
+    Alert.alert("Copied", "Portal link copied to clipboard");
+  };
+
+  const togglePlay = async () => {
+    if (playerStatus.playing) {
+      player.pause();
+      return;
+    }
+    if (audioUrl) {
+      player.play();
+      return;
+    }
+    setLoadingTts(true);
+    try {
+      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false });
+      const res = await api.ttsReport(id!);
+      setAudioUrl(res.audio_data_url);
+      // Autoplay after URL is set — expo-audio picks up the new source, then play
+      setTimeout(() => {
+        try { player.play(); } catch {}
+      }, 200);
+    } catch (e: any) {
+      Alert.alert("Read aloud failed", e.message || "Could not generate audio");
+    } finally {
+      setLoadingTts(false);
+    }
+  };
+
   if (loading) {
     return (
       <View style={styles.center}>
@@ -88,9 +163,14 @@ export default function ReportDetail() {
         <Text style={styles.headerTitle} numberOfLines={1}>
           {report.report_date}
         </Text>
-        <Pressable onPress={downloadWorkday} testID="workday-export">
-          <Ionicons name="download" size={22} color={colors.brandPrimary} />
-        </Pressable>
+        <View style={{ flexDirection: "row", gap: spacing.md }}>
+          <Pressable onPress={onShare} testID="report-share">
+            <Ionicons name="share-social" size={22} color={colors.brandPrimary} />
+          </Pressable>
+          <Pressable onPress={downloadWorkday} testID="workday-export">
+            <Ionicons name="download" size={22} color={colors.brandPrimary} />
+          </Pressable>
+        </View>
       </View>
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: (insets.bottom || 0) + 100 }}>
@@ -111,6 +191,37 @@ export default function ReportDetail() {
         ) : null}
 
         <View style={styles.card}>
+          <View style={styles.summaryHeaderRow}>
+            <Pressable
+              testID="tts-play-button"
+              onPress={togglePlay}
+              disabled={loadingTts}
+              style={({ pressed }) => [
+                styles.playBtn,
+                pressed && { opacity: 0.85 },
+                loadingTts && { opacity: 0.7 },
+              ]}
+            >
+              {loadingTts ? (
+                <ActivityIndicator size="small" color={colors.onBrandPrimary} />
+              ) : (
+                <Ionicons
+                  name={playerStatus.playing ? "pause" : "play"}
+                  size={16}
+                  color={colors.onBrandPrimary}
+                />
+              )}
+              <Text style={styles.playBtnText}>
+                {loadingTts
+                  ? "Generating…"
+                  : playerStatus.playing
+                  ? "Pause"
+                  : audioUrl
+                  ? "Resume"
+                  : "Read aloud"}
+              </Text>
+            </Pressable>
+          </View>
           <Text style={styles.summaryText}>{report.ai_summary}</Text>
         </View>
 
@@ -133,6 +244,15 @@ export default function ReportDetail() {
                   {v.address || `${v.latitude?.toFixed?.(4)}, ${v.longitude?.toFixed?.(4)}`}
                 </Text>
                 {v.notes ? <Text style={styles.miniNotes}>{v.notes}</Text> : null}
+                {v.photos?.length ? (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: spacing.sm }}>
+                    <View style={{ flexDirection: "row", gap: 6 }}>
+                      {v.photos.map((p: string, i: number) => (
+                        <VisitPhotoTile key={p + i} path={p} testID={`report-visit-photo-${v.id}-${i}`} />
+                      ))}
+                    </View>
+                  </ScrollView>
+                ) : null}
               </View>
             ))}
           </MetaCard>
@@ -165,6 +285,35 @@ export default function ReportDetail() {
             ))}
           </MetaCard>
         ) : null}
+
+        {/* Portal Link */}
+        <MetaCard title="Customer Portal Link" testID="report-portal">
+          {report.public_token ? (
+            <View>
+              <Text style={styles.miniSub}>
+                Anyone with this link can view the report summary and signature (no login needed).
+              </Text>
+              <View style={styles.portalRow}>
+                <Text style={styles.portalLink} numberOfLines={1}>
+                  {process.env.EXPO_PUBLIC_BACKEND_URL}/api/public/reports/{report.public_token}
+                </Text>
+              </View>
+              <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm }}>
+                <Pressable testID="portal-copy" onPress={copyPortalLink} style={[styles.smallBtn, { backgroundColor: colors.brandPrimary, flex: 1 }]}>
+                  <Text style={{ color: colors.onBrandPrimary, fontWeight: "700" }}>Copy Link</Text>
+                </Pressable>
+                <Pressable testID="portal-revoke" onPress={revokePortalLink} style={[styles.smallBtn, { backgroundColor: colors.surfaceTertiary, flex: 1 }]}>
+                  <Text style={{ color: colors.error, fontWeight: "700" }}>Revoke</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : (
+            <Pressable testID="portal-generate" onPress={generatePortalLink} style={styles.signCTA}>
+              <Ionicons name="link" size={16} color={colors.onBrandPrimary} />
+              <Text style={{ color: colors.onBrandPrimary, fontWeight: "700" }}>Generate Share Link</Text>
+            </Pressable>
+          )}
+        </MetaCard>
 
         {/* Signature section */}
         <MetaCard title="Customer Sign-off" testID="report-signature">
@@ -271,6 +420,21 @@ function MetaCard({ title, children, testID }: { title: string; children: React.
   );
 }
 
+function VisitPhotoTile({ path, testID }: { path: string; testID: string }) {
+  const [uri, setUri] = useState<string | null>(null);
+  useEffect(() => {
+    authedPhotoUrl(path).then(setUri);
+  }, [path]);
+  return (
+    <Image
+      testID={testID}
+      source={uri ? { uri } : undefined}
+      style={{ width: 100, height: 100, borderRadius: 8, backgroundColor: colors.surfaceTertiary }}
+      contentFit="cover"
+    />
+  );
+}
+
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   header: {
@@ -317,6 +481,17 @@ const styles = StyleSheet.create({
     marginTop: spacing.lg,
   },
   summaryText: { color: colors.onSurface, fontSize: 15, lineHeight: 22 },
+  summaryHeaderRow: { flexDirection: "row", justifyContent: "flex-end", marginBottom: spacing.sm },
+  playBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: colors.brandPrimary,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+  },
+  playBtnText: { color: colors.onBrandPrimary, fontWeight: "700", fontSize: 12 },
   metaCard: {
     backgroundColor: colors.surfaceSecondary,
     borderRadius: radius.md,
@@ -379,4 +554,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  portalRow: {
+    backgroundColor: colors.surfaceTertiary,
+    padding: spacing.sm,
+    borderRadius: radius.md,
+    marginTop: spacing.sm,
+  },
+  portalLink: { color: colors.onSurface, fontSize: 11, fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace" },
 });

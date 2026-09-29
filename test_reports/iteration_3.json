@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration 3: full backend + frontend testing for 6 new PaintOps features (report kebab Edit/Archive/Delete/Share, Today's Reports on Home, Digest Scheduler admin API, Photo attachments per visit validation branches, /api/files auth, Customer Portal Link + revoke). Backend: 62/62 pytest passed (27 new iteration3 tests + 35 regression from previous suites). Fixed 1 real backend bug found during testing (see rca_of_issue + updated_files). Frontend: mobile E2E on Expo web preview walked through admin login -> Home shows 'Today's Reports' section (8 home-report cards) -> Reports tab -> kebab menu shows Edit/Share/Archive/Delete -> Archive removes card from default list -> 'Show archived' toggle lists archived cards -> Unarchive restores -> Edit -> edit-highlights save -> back to list -> report detail shows Customer Portal Link card -> Generate Share Link -> portal-copy + portal-revoke buttons + public URL visible -> Revoke restores generate -> Admin Weekly Digest -> scheduler-card visible -> enable + pick Mon + 8:00 + email + sched-save -> 'Auto-digest scheduled ✓' rendered.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "report/[id].tsx (detail body)", "issues": ["Report detail body renders `ai_summary` (the GPT-generated summary), not the raw `highlights` field. After PATCH /reports/{id} updates `highlights`, the change is stored (verified via GET) but is not visible in the detail body area (which still shows the original AI summary). The reviewer's expectation 'highlights persisted in report detail body area' is only true if the user reads the raw fields; consider re-rendering highlights explicitly on the detail screen or regenerating ai_summary after edit."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration3.py",
+    "/app/backend/tests/test_new_features.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_iteration3.xml",
+    "/app/test_reports/pytest/pytest_iteration3_full.xml"
+  ],
+  "action_items": [
+    "Optional: after PATCH /reports/{id} edits highlights/delays/change_orders/material_notes, regenerate ai_summary OR also show the raw editable fields on the report detail screen so edits are visible without opening the edit form. Backend already persists them correctly.",
+    "Optional (carried from iteration_2): mock/hide signature pad on web (Platform.OS === 'web') since react-native-signature-canvas depends on react-native-webview which is unsupported on web preview."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 1381 lines - split into routers (auth, reports, customers, digest, transcribe, files, visits) for maintainability.",
+    "BUG (fixed by testing agent): FastAPI was constructed with `lifespan=lifespan`, which makes `@app.on_event('startup')` and `@app.on_event('shutdown')` NO-OPS. As a result the APScheduler was never attached to `app.scheduler`, and PUT /api/digest/schedule crashed with AttributeError inside _reschedule_digest. Fix (applied): moved scheduler bootstrap + shutdown into the `lifespan` async context manager and removed the redundant on_event handlers.",
+    "GET /api/files/{path} accepts a ?token= query param that is a full JWT. That is fine for the intended <img src=...> preview flow, but a leaked URL means any Bearer JWT is now visible in server access logs and browser history. Consider using short-lived, single-purpose signed URLs (separate token with `type: 'file-read'` claim + shorter exp) instead of reusing the auth JWT.",
+    "public_report endpoint returns author_name and project_code/name — confirm this is intentional for the 'customer portal' view; a paranoid PM may want to hide the internal role."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (moved scheduler start/stop into `lifespan()`; removed dead @app.on_event('startup')/(shutdown) handlers - they don't run when lifespan is set)",
+    "/app/backend/tests/test_iteration3.py (new - 27 pytest tests covering PATCH/archive/unarchive/soft-delete reports, portal-link create/get/revoke, digest schedule GET/PUT + admin-only, photos 400/404 validation, /api/files 401)"
+  ],
+  "success_rate": {"backend": "100% (62/62 pytest)", "frontend": "100% of testable flows on web preview"},
+  "seed_data_creation": "Reused admin@paintops.com and production@paintops.com. Iteration3 tests created: 2 additional reports (TEST-IT3-A, TEST-IT3-B) - TEST-IT3-B soft-deleted (deleted_at set, hidden from GET /reports). 1 additional prod2@paintops.com user (for owner-check forbidden test). 1 TEST_PhotoCust visit for photo empty-400 test. digest_schedule 'singleton' doc set to enabled=true day=mon hour=8 minute=0 recipient=delivered@resend.dev.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend at EXPO_PUBLIC_BACKEND_URL=https://project-digest-7.preview.emergentagent.com. Admin admin@paintops.com/Admin@12345 seeded. Prod production@paintops.com/Prod@12345. Secondary prod prod2@paintops.com/Prod@12345 (created by iteration3 forbidden test). Run pytest with `-n 0` (pytest.ini forces -n 2 loadscope which breaks module-scoped State fixture). ~10 seeded reports exist in DB after 3 iterations. digest_schedule doc is `enabled=true, mon 08:00`; APScheduler job 'weekly-digest' is registered and armed but WILL NOT fire before Mon 08:00 UTC — safe to leave. Do NOT hit /api/transcribe with real audio (Whisper credits) or /api/visits/{id}/photos with real bytes (object-storage credits). All new iteration3 testIDs: report-menu-<id>, menu-edit, menu-share, menu-archive, menu-delete, menu-backdrop, toggle-archived, portal-generate, portal-copy, portal-revoke, edit-highlights, edit-save, scheduler-card, scheduler-enabled, sched-day-<mon..sun>, sched-hour, sched-minute, sched-emails, sched-save, home-report-<id>, offline-queue-banner.",
+  "rca_of_issue": "Bug (fixed by testing agent): PUT /api/digest/schedule returned 500 Internal Server Error. Root cause: server.py defines `app = FastAPI(title=..., lifespan=lifespan)` AND registers `@app.on_event('startup')` handlers. Per FastAPI/Starlette docs, when a `lifespan` context manager is passed, all `on_event('startup'|'shutdown')` handlers are ignored — so `_start_scheduler` never ran and `app.scheduler` was never set, causing `AttributeError: 'FastAPI' object has no attribute 'scheduler'` inside `_reschedule_digest`. Fix applied: moved AsyncIOScheduler creation + `scheduler.start()` + `_reschedule_digest(app)` into the `lifespan` async context manager (before `yield`) and `scheduler.shutdown()` after `yield`; removed the dead `@app.on_event` handlers. Verified: backend logs now show 'apscheduler.scheduler - INFO - Scheduler started' and 'Added job _run_scheduled_digest to job store default' on startup, and PUT /api/digest/schedule returns 200 with the schedule persisted (verified via re-GET). Full pytest re-run: 62/62 green including test_put_schedule_admin."
+}

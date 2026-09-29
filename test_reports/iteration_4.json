@@ -1,0 +1,43 @@
+{
+  "summary": "Iteration 4: Backend + frontend testing for Emergent managed push (POST /api/register-push) and ElevenLabs TTS (POST /api/reports/{id}/tts), plus regression. Backend: 23/23 pytest passed in /app/backend/tests/test_iteration4.py covering (a) /register-push auth + own_user 201 + other_user 403 + admin-for-other 201 with placeholder EMERGENT_PUSH_KEY tolerated (upstream 401 → 201 with note), (b) TTS 401 no-token / 404 bad-id / 403 foreign-report by non-management / 200 happy-path returns audio_data_url starting with 'data:audio/mpeg;base64,' and bytes > 1000 (ONE call to save credits), (c) send_push fire-and-forget verified: report create → 200 with populated ai_summary, digest weekly → 200 with text + report_ids, signature PATCH → 200 ok:true — all succeed despite placeholder push key. Regression smoke (auth/me, list reports, report detail with signature persisted, weather, digest schedule GET, customers list, portal-link create, transcribe empty→400) all green. Frontend E2E on 390x844 web preview: admin login → Home → tapped 'TEST Iteration4 Foreign Project' report → detail rendered → tapped tts-play-button: label transitioned 'Read aloud' → 'Generating…' → 'Resume' at ~24s (Resume instead of Pause is expected on web due to autoplay-block; audioUrl was set, player just didn't auto-start on web). No error alert, no red-screen, only benign warnings ('expo-notifications listener not supported on web' — module-level import side effect; 'shadow*' style deprecation).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "React Native Web / styles", "issue": "Deprecation warning at runtime: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' — several StyleSheet entries use shadowColor/shadowOffset/shadowOpacity/shadowRadius. Consider migrating to `boxShadow` for web parity or wrapping in Platform.select. Non-blocking. Reference: multiple screens (search grep -rn shadowColor /app/frontend/app /app/frontend/src)."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration4.py",
+    "/app/backend/tests/test_iteration3.py",
+    "/app/backend/tests/test_new_features.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_iteration4.xml"
+  ],
+  "action_items": [
+    "None blocking. All iteration-4 backend + frontend acceptance criteria met.",
+    "(Optional) Migrate deprecated `shadow*` StyleSheet props to `boxShadow` (or Platform.select) to silence the React Native Web deprecation warning.",
+    "(Optional) In app/_layout.tsx, the `expo-notifications` module import triggers a web-only warning about push-token listeners even though the code is guarded by Platform.OS. If you want a fully clean console on web, dynamic-import expo-notifications only on native (require() inside a `Platform.OS !== 'web'` block)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 1560 lines — strongly recommend splitting into routers (auth, reports, customers, digest, push, tts, files, transcribe, visits, weather). Growing monolith will hurt review/test velocity.",
+    "send_push is invoked from inline try/except in the request path (e.g., signature endpoint). Non-blocking is correct, but it still awaits the HTTP call before returning (up to 10s timeout on placeholder key). For preview/prod resilience, consider `asyncio.create_task(send_push(...))` so the response returns immediately regardless of upstream latency.",
+    "/api/reports/{id}/tts synthesizes on every call and returns a full base64 payload — no caching. For a 2-minute summary at 128kbps that's ~2 MB per call. Consider persisting audio_data_url or an object-storage path on the Report doc keyed by (report_id, ai_summary hash) to avoid re-burning ElevenLabs credits when the same summary is re-read.",
+    "TTS role check uses `doc['user_id'] != user['id']` for non-management. Role `Sales`/`Labor`/`Production` are all treated the same. Confirm this is intended (e.g., Sales cannot TTS someone else's report). Documented in code path lines 1183-1185.",
+    "register_push upserts into `push_tokens` by (user_id, device_token). If a user swaps device_token but reuses user_id the old token stays forever. Consider a TTL index or an explicit /api/unregister-push."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration4.py (new — 23 pytest tests: register-push, TTS, send_push non-blocking, regression smoke)"
+  ],
+  "success_rate": {"backend": "100% (23/23 iteration4 pytest)", "frontend": "100% of testable TTS flow on web preview"},
+  "seed_data_creation": "Reused admin@paintops.com/Admin@12345 + production@paintops.com/Prod@12345. Created prod2@paintops.com/Prod@12345 (Production role) if not already present. Created 2 test reports: TEST-Iteration4 TTS Project (by prod, has signature 'TEST Homeowner IT4') and TEST-Iteration4 Foreign Project (by prod2). Persisted TEST push_tokens documents: TEST_TOKEN_PROD_ABCDEF (ios), TEST_TOKEN_ADMIN_FOR_PROD (android).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "EXPO_PUBLIC_BACKEND_URL=https://project-digest-7.preview.emergentagent.com. Admin admin@paintops.com/Admin@12345, prod production@paintops.com/Prod@12345, prod2 prod2@paintops.com/Prod@12345. Run pytest with `-n 0` (pytest.ini enforces -n 2 which breaks module-scoped State fixture). EMERGENT_PUSH_KEY=placeholder — upstream returns 401 and server logs 'EMERGENT_PUSH_KEY missing or invalid; push registration is a no-op in preview' — endpoints still return 201 with note. ELEVENLABS_API_KEY (sk_...) is valid; TTS happy-path ~24s and returns ~50-80 KB mp3. Do only ONE TTS call per run to preserve credits. All new testIDs on web preview verified: tts-play-button. Do NOT hit /api/transcribe with real audio (Whisper credits) or /api/visits/{id}/photos with real bytes.",
+  "rca_of_issue": "N/A — no bugs found in iteration 4 implementation. Only self-inflicted test bug fixed during run: initial regression smoke test called /api/weather?zip=94103 but the endpoint requires ?lat=&lon= query params (returns 422 otherwise). Fixed the test to pass lat=37.77&lon=-122.42."
+}

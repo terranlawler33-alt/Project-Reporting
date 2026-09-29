@@ -12,12 +12,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Location from "expo-location";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import * as Haptics from "expo-haptics";
+import * as Network from "expo-network";
 import { useRouter, useFocusEffect } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import { Image } from "expo-image";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/auth/AuthProvider";
 import { colors, spacing, radius } from "@/src/theme";
+import { flushQueue, pendingCount } from "@/src/offline";
 
 const WEATHER_HERO_IMG =
   "https://images.unsplash.com/photo-1505533542167-8c89838bb19e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMG1vcm5pbmclMjBsaWdodCUyMHNreSUyMHdlYXRoZXIlMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc5MDY1MTk5NHww&ixlib=rb-4.1.0&q=85";
@@ -31,9 +33,19 @@ export default function HomeScreen() {
   const [visits, setVisits] = useState<any[]>([]);
   const [breaks, setBreaks] = useState<any[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [todayReports, setTodayReports] = useState<any[]>([]);
+  const [pending, setPending] = useState(0);
 
   const loadEverything = useCallback(async () => {
     if (!user) return;
+    // Try to flush offline queue on load
+    try {
+      const net = await Network.getNetworkStateAsync();
+      if (net.isConnected) {
+        await flushQueue();
+      }
+      setPending(await pendingCount());
+    } catch {}
     try {
       let coords: { latitude: number; longitude: number } | null = null;
       try {
@@ -55,9 +67,15 @@ export default function HomeScreen() {
         } catch {}
       }
       try {
-        const [v, b] = await Promise.all([api.visitsToday(), api.breaksToday()]);
+        const [v, b, allReports] = await Promise.all([
+          api.visitsToday(),
+          api.breaksToday(),
+          api.listReports().catch(() => []),
+        ]);
         setVisits(v);
         setBreaks(b);
+        const today = new Date().toISOString().slice(0, 10);
+        setTodayReports((allReports as any[]).filter((r) => r.report_date === today && !r.archived));
       } catch {}
     } finally {
       setLoadingWeather(false);
@@ -176,6 +194,46 @@ export default function HomeScreen() {
             >
               <Text style={styles.endBreakBtnText}>End</Text>
             </Pressable>
+          </View>
+        ) : null}
+
+        {pending > 0 ? (
+          <View style={styles.offlineBanner} testID="offline-queue-banner">
+            <Ionicons name="cloud-offline" size={16} color={colors.warning} />
+            <Text style={styles.offlineText}>
+              {pending} action{pending > 1 ? "s" : ""} queued — will sync when online
+            </Text>
+          </View>
+        ) : null}
+
+        {/* Today's Reports */}
+        {todayReports.length > 0 ? (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Today's Reports</Text>
+              <Text style={styles.sectionSub}>{todayReports.length} filed</Text>
+            </View>
+            {todayReports.map((r) => (
+              <Pressable
+                key={r.id}
+                testID={`home-report-${r.id}`}
+                onPress={() => router.push(`/report/${r.id}`)}
+                style={({ pressed }) => [styles.reportRow, pressed && { opacity: 0.85 }]}
+              >
+                <View style={styles.reportIcon}>
+                  <Ionicons name="sparkles" size={16} color={colors.onBrandTertiary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.reportTitle} numberOfLines={1}>
+                    {r.project_name || r.project_code || "Daily Report"}
+                  </Text>
+                  <Text style={styles.reportSub} numberOfLines={2}>
+                    {r.ai_summary}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+              </Pressable>
+            ))}
           </View>
         ) : null}
 
@@ -316,6 +374,38 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   endBreakBtnText: { color: colors.brandTertiary, fontWeight: "700", fontSize: 12 },
+  offlineBanner: {
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.md,
+    padding: spacing.sm,
+    backgroundColor: "#FEF3C7",
+    borderRadius: radius.md,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  offlineText: { color: colors.warning, fontWeight: "600", fontSize: 12, flex: 1 },
+  reportRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    padding: spacing.md,
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: spacing.sm,
+  },
+  reportIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: radius.md,
+    backgroundColor: colors.brandTertiary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  reportTitle: { fontWeight: "700", color: colors.onSurface, fontSize: 14 },
+  reportSub: { color: colors.muted, fontSize: 12, marginTop: 2 },
   section: { padding: spacing.lg },
   sectionHeader: {
     flexDirection: "row",

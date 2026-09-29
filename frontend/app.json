@@ -13,7 +13,9 @@
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Tag daily reports with job site location.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Tag daily reports with job site location.",
-        "NSMicrophoneUsageDescription": "Dictate report highlights hands-free."
+        "NSMicrophoneUsageDescription": "Dictate report highlights hands-free.",
+        "NSCameraUsageDescription": "Snap job-site photos for daily reports.",
+        "NSPhotoLibraryUsageDescription": "Attach photos to daily reports."
       }
     },
     "android": {
@@ -25,7 +27,9 @@
       "permissions": [
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
-        "RECORD_AUDIO"
+        "RECORD_AUDIO",
+        "CAMERA",
+        "READ_MEDIA_IMAGES"
       ]
     },
     "web": {
@@ -60,6 +64,20 @@
         "expo-audio",
         {
           "microphonePermission": "Dictate report highlights hands-free while driving."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Attach job-site photos to daily reports.",
+          "cameraPermission": "Snap job-site photos for daily reports."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#D97706"
         }
       ]
     ],

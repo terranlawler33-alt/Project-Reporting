@@ -86,4 +86,26 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ customer_name, signature_base64 }),
     }),
+  patchReport: (report_id: string, patch: any) =>
+    apiRequest<any>(`/reports/${report_id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  archiveReport: (report_id: string) =>
+    apiRequest<any>(`/reports/${report_id}/archive`, { method: "POST" }),
+  unarchiveReport: (report_id: string) =>
+    apiRequest<any>(`/reports/${report_id}/unarchive`, { method: "POST" }),
+  deleteReport: (report_id: string) =>
+    apiRequest<any>(`/reports/${report_id}`, { method: "DELETE" }),
+  createPortalLink: (report_id: string) =>
+    apiRequest<{ token: string }>(`/reports/${report_id}/portal-link`, { method: "POST" }),
+  revokePortalLink: (report_id: string) =>
+    apiRequest<{ ok: boolean }>(`/reports/${report_id}/portal-link`, { method: "DELETE" }),
+  getSchedule: () => apiRequest<any>("/digest/schedule"),
+  setSchedule: (payload: any) =>
+    apiRequest<any>("/digest/schedule", { method: "PUT", body: JSON.stringify(payload) }),
+  ttsReport: (report_id: string) =>
+    apiRequest<{ audio_data_url: string; bytes: number }>(`/reports/${report_id}/tts`, {
+      method: "POST",
+    }),
 };
