@@ -26,11 +26,16 @@ export default function ReportsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [menuFor, setMenuFor] = useState<any | null>(null);
+  const [draft, setDraft] = useState<any | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const r = await api.listReports();
+      const [r, d] = await Promise.all([
+        api.listReports(),
+        api.getDraftToday().catch(() => null),
+      ]);
       setReports(r);
+      setDraft(d);
     } catch {}
     setLoading(false);
   }, []);
@@ -136,6 +141,27 @@ export default function ReportsScreen() {
             />
           }
         >
+          {draft ? (
+            <Pressable
+              testID="resume-draft-banner"
+              onPress={() => router.push("/report/new")}
+              style={({ pressed }) => [styles.draftBanner, pressed && { opacity: 0.9 }]}
+            >
+              <View style={styles.draftBannerIcon}>
+                <Ionicons name="document-text" size={18} color={colors.onBrandPrimary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.draftBannerTitle}>Today's draft in progress</Text>
+                <Text style={styles.draftBannerSub} numberOfLines={1}>
+                  {draft.project_name || draft.project_code || "Tap to add entries & submit"}
+                  {draft.projects?.length
+                    ? ` · ${draft.projects.length} project${draft.projects.length === 1 ? "" : "s"}`
+                    : ""}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.onBrandTertiary} />
+            </Pressable>
+          ) : null}
           {visible.length === 0 ? (
             <View style={styles.empty}>
               <Ionicons name="document-text-outline" size={40} color={colors.muted} />
@@ -223,7 +249,7 @@ export default function ReportsScreen() {
         style={[styles.fab, { bottom: (insets.bottom || 0) + 80 }]}
       >
         <Ionicons name="add" size={22} color={colors.onBrandPrimary} />
-        <Text style={styles.fabText}>Create Report</Text>
+        <Text style={styles.fabText}>New Report</Text>
       </Pressable>
 
       <Modal
@@ -339,6 +365,27 @@ const styles = StyleSheet.create({
   },
   emptyText: { fontWeight: "700", color: colors.onSurface, marginTop: spacing.sm },
   emptySub: { color: colors.muted, fontSize: 12, marginTop: spacing.xs, textAlign: "center" },
+  draftBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    backgroundColor: colors.brandTertiary,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginBottom: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+  },
+  draftBannerIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: radius.pill,
+    backgroundColor: colors.brandPrimary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  draftBannerTitle: { color: colors.onBrandTertiary, fontWeight: "700", fontSize: 13 },
+  draftBannerSub: { color: colors.onBrandTertiary, fontSize: 11, marginTop: 2, opacity: 0.85 },
   cardWrap: { position: "relative", marginBottom: spacing.md },
   card: {
     backgroundColor: colors.surfaceSecondary,

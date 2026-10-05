@@ -39,6 +39,7 @@ export type ProjectEntry = {
   touch_up?: boolean;
   photos?: string[];
   visit_ids?: string[];
+  summary?: string | null;
 };
 
 function newProject(): ProjectEntry {
@@ -58,6 +59,7 @@ function newProject(): ProjectEntry {
     touch_up: false,
     photos: [],
     visit_ids: [],
+    summary: "",
   };
 }
 
@@ -288,6 +290,17 @@ export function ProjectsSection({ projects, onChange }: Props) {
               />
             </View>
           </View>
+
+          <Text style={styles.label}>Job overview (shown on map & reply portal)</Text>
+          <TextInput
+            testID={`project-summary-${idx}`}
+            value={p.summary || ""}
+            onChangeText={(t) => update(p.id, { summary: t })}
+            placeholder="E.g. 3-coat interior repaint, taupe to white, kitchen + living, crew of 2, 3-day job"
+            placeholderTextColor={colors.muted}
+            style={[styles.input, styles.multi]}
+            multiline
+          />
 
           <Text style={styles.label}>Work notes</Text>
           <TextInput

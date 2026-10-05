@@ -23,6 +23,8 @@ import { Image } from "expo-image";
 import { api } from "@/src/api";
 import { colors, spacing, radius } from "@/src/theme";
 import { PaintOpsMap } from "@/src/components/PaintOpsMap";
+import { SmsImportSheet } from "@/src/components/SmsImportSheet";
+import { isSmsAvailable } from "@/src/sms";
 import { enqueueAction } from "@/src/offline";
 import { uploadVisitPhoto, authedPhotoUrl } from "@/src/photos";
 
@@ -52,6 +54,10 @@ export default function MapScreen() {
   const [bookmarks, setBookmarks] = useState<any[]>([]);
   const [confirmDeleteVisit, setConfirmDeleteVisit] = useState<any | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [showSmsImport, setShowSmsImport] = useState(false);
+  const [jobSummaries, setJobSummaries] = useState<
+    Record<string, { summary: string; label: string; flag: string | null }>
+  >({});
   const [form, setForm] = useState({
     latitude: "",
     longitude: "",
@@ -114,14 +120,36 @@ export default function MapScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [v, c, b] = await Promise.all([
+      const [v, c, b, reports] = await Promise.all([
         api.visitsToday(),
         api.listCustomers().catch(() => []),
         api.listBookmarks().catch(() => []),
+        api.listReports().catch(() => [] as any[]),
       ]);
       setVisits(v);
       setCustomers(c);
       setBookmarks(b || []);
+      // Build project_id → {summary,label,flag} lookup for pin tooltips
+      const lookup: Record<string, { summary: string; label: string; flag: string | null }> = {};
+      for (const r of reports || []) {
+        for (const p of (r as any).projects || []) {
+          if (!p?.id) continue;
+          if (!p.summary && !p.priority_flag && !p.project_name) continue;
+          // keep newest entry (reports are returned sorted newest first)
+          if (!lookup[p.id]) {
+            lookup[p.id] = {
+              summary: p.summary || "",
+              label:
+                p.project_name ||
+                p.customer_name ||
+                p.project_code ||
+                "",
+              flag: p.priority_flag || null,
+            };
+          }
+        }
+      }
+      setJobSummaries(lookup);
     } catch {}
     setLoading(false);
   }, []);
@@ -665,6 +693,24 @@ export default function MapScreen() {
                 <Text style={styles.visitCoord}>
                   {v.address || `${v.latitude.toFixed(5)}, ${v.longitude.toFixed(5)}`}
                 </Text>
+                {v.project_id && jobSummaries[v.project_id]?.summary ? (
+                  <View style={styles.pinSummaryChip}>
+                    <Ionicons name="sparkles" size={10} color={colors.brandPrimary} />
+                    <Text style={styles.pinSummaryText} numberOfLines={2}>
+                      {jobSummaries[v.project_id].summary}
+                    </Text>
+                  </View>
+                ) : null}
+                {v.project_id && jobSummaries[v.project_id]?.flag ? (
+                  <View style={styles.pinFlagRow}>
+                    <View style={styles.pinFlagChip}>
+                      <Ionicons name="flag" size={9} color={colors.error} />
+                      <Text style={styles.pinFlagText}>
+                        {jobSummaries[v.project_id].flag}
+                      </Text>
+                    </View>
+                  </View>
+                ) : null}
                 {v.notes ? <Text style={styles.visitNotes}>{v.notes}</Text> : null}
                 <Text style={styles.visitTime}>
                   {new Date(v.timestamp).toLocaleTimeString()}
@@ -802,6 +848,25 @@ export default function MapScreen() {
                       : " · still active"}
                   </Text>
                 </View>
+                {selectedVisit.project_id && jobSummaries[selectedVisit.project_id]?.summary ? (
+                  <View style={styles.detailSummaryCard} testID="visit-job-summary">
+                    <View style={styles.detailSummaryHead}>
+                      <Ionicons name="sparkles" size={11} color={colors.brandPrimary} />
+                      <Text style={styles.detailSummaryLabel}>Job overview</Text>
+                      {jobSummaries[selectedVisit.project_id].flag ? (
+                        <View style={styles.pinFlagChip}>
+                          <Ionicons name="flag" size={9} color={colors.error} />
+                          <Text style={styles.pinFlagText}>
+                            {jobSummaries[selectedVisit.project_id].flag}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    <Text style={styles.detailSummaryText}>
+                      {jobSummaries[selectedVisit.project_id].summary}
+                    </Text>
+                  </View>
+                ) : null}
                 {selectedVisit.notes ? (
                   <View style={[styles.detailRow, { alignItems: "flex-start" }]}>
                     <Ionicons name="document-text" size={14} color={colors.brandPrimary} />
@@ -1028,7 +1093,31 @@ export default function MapScreen() {
                 placeholder="P-1042"
                 placeholderTextColor={colors.muted}
               />
-              <Text style={styles.label}>Notes</Text>
+              <View style={styles.notesLabelRow}>
+                <Text style={styles.label}>Notes</Text>
+                <Pressable
+                  testID="edit-notes-import-sms"
+                  onPress={() => setShowSmsImport(true)}
+                  style={[
+                    styles.notesImportBtn,
+                    !isSmsAvailable() && styles.notesImportBtnDisabled,
+                  ]}
+                >
+                  <Ionicons
+                    name="phone-portrait"
+                    size={13}
+                    color={isSmsAvailable() ? colors.onBrandPrimary : colors.muted}
+                  />
+                  <Text
+                    style={[
+                      styles.notesImportBtnText,
+                      !isSmsAvailable() && { color: colors.muted },
+                    ]}
+                  >
+                    Import SMS
+                  </Text>
+                </Pressable>
+              </View>
               <TextInput
                 testID="edit-notes"
                 value={editForm.notes}
@@ -1054,6 +1143,18 @@ export default function MapScreen() {
           </View>
         </View>
       </Modal>
+
+      <SmsImportSheet
+        visible={showSmsImport}
+        onClose={() => setShowSmsImport(false)}
+        mode="visit-notes"
+        onImportText={(text) =>
+          setEditForm((f) => ({
+            ...f,
+            notes: f.notes ? `${f.notes}\n${text}` : text,
+          }))
+        }
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -1507,6 +1608,80 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontSize: 14,
   },
+  notesLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: spacing.sm,
+    marginBottom: 4,
+  },
+  notesImportBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: colors.brandPrimary,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+  },
+  notesImportBtnDisabled: {
+    backgroundColor: colors.surfaceTertiary,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  notesImportBtnText: { color: colors.onBrandPrimary, fontWeight: "700", fontSize: 11 },
+  pinSummaryChip: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 4,
+    marginTop: 6,
+    padding: 6,
+    backgroundColor: "#FFF7ED",
+    borderRadius: 6,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.brandPrimary,
+  },
+  pinSummaryText: {
+    color: colors.onSurface,
+    fontSize: 11,
+    lineHeight: 15,
+    flex: 1,
+    fontWeight: "500",
+  },
+  pinFlagRow: { flexDirection: "row", marginTop: 4 },
+  pinFlagChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: "#FEE2E2",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: radius.pill,
+  },
+  pinFlagText: { color: colors.error, fontSize: 9, fontWeight: "700" },
+  detailSummaryCard: {
+    marginTop: spacing.sm,
+    padding: spacing.sm,
+    backgroundColor: "#FFF7ED",
+    borderLeftWidth: 3,
+    borderLeftColor: colors.brandPrimary,
+    borderRadius: 6,
+  },
+  detailSummaryHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginBottom: 4,
+  },
+  detailSummaryLabel: {
+    color: colors.brandPrimary,
+    fontSize: 10,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    flex: 1,
+  },
+  detailSummaryText: { color: colors.onSurface, fontSize: 13, lineHeight: 19 },
 });
 
 function VisitPhoto({ path, testID }: { path: string; testID: string }) {

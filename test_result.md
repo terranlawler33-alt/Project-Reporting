@@ -205,13 +205,12 @@ frontend:
 
 metadata:
   created_by: "main_agent"
-  version: "1.5"
-  test_sequence: 11
+  version: "1.7"
+  test_sequence: 21
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Hourly forecast endpoint /api/weather/hourly"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -219,15 +218,15 @@ test_plan:
 agent_communication:
     - agent: "main"
       message: |
-        Iteration 11 — Backend test focus: new GET /api/weather/hourly endpoint.
-        1. Happy path: lat=42.358&lon=-71.060 → 200; points length 1..12; each
-           point has hour_label (HH:MM), numeric temperature_f, numeric precip_prob
-           (0..100), numeric precipitation, string conditions, int weather_code,
-           numeric wind_mph.
-        2. hours=6 → response `hours` <= 6.
-        3. hours=99 clamped → response `hours` <= 24.
-        4. hours=0 clamped → at least 1 point (server enforces min 1).
-        5. Auth required — no token → 401/403.
-        6. Regression: /api/weather, /api/geocode still 200; /api/reports/{id}/tts
-           unchanged.
-        Credentials: admin@paintops.com / Admin@12345. Backend only.
+        Iteration 21 — Mail / Responses + Project Summary + public HTML portal: COMPLETE.
+        - Backend: 27/27 pytest cases passed. New endpoints: public HTML portal, public respond,
+          /responses CRUD + unread-count, per-project summary PATCH. Project.summary field added
+          to ProjectEntry model.
+        - Frontend: Mail tab added with unread badge (polls every 20s), inbox list with reply detail
+          modal (Mark read/unread + Archive + Delete). Report detail now renders a "JOBS ON THIS
+          REPORT" card with per-project summary (inline edit) and attached replies thread. Map pins
+          and visit detail modal show job overview chip + flag chip when visit.project_id matches
+          a project with a summary. FAB label reverted to "New Report" (draft logic preserved).
+        - Public portal HTML includes per-flagged-job "Respond to this job →" button and a general
+          reply button. Full round-trip verified via screenshots: public submit → Mail inbox badge
+          flips red → open detail → marked read.

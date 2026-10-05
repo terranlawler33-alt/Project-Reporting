@@ -1,0 +1,61 @@
+{
+  "summary": "Iteration 21 backend-only verification for Response Mail + Project Summary + Public HTML portal. All 27 pytest cases PASS (27/27, 110s, serial via -o addopts=''). Covered: (1) GET /api/public/reports/{token} returns text/html 200 with <html, embeds ai_summary and renders a 'respond-btn' with data-pid for flagged projects; bogus token → 404. (2) POST /api/public/reports/{token}/respond with no auth: valid message w/ matching project_id → 200 ReportResponse {report_id, report_user_id==author id, project_label resolved from project_name, project_flag=='Touch-Ups'}; non-matching project_id → 200 with project_label=null/project_flag=null; empty message → 422 (min_length=1); bad token → 404; only `message` required (name/email optional, both null in response). (3) GET /api/responses returns admin's inbox sorted DESC by created_at, excludes archived by default; include_archived=true surfaces archived; unread_only=true filters out responses with read_at set. (4) GET /api/responses/unread-count returns {count:N} and correctly excludes both archived and read entries (verified count==1 with 3 responses where 1 archived, 1 read, 1 fresh). (5) GET /api/reports/{id}/responses sorted ASC; non-FULL_ROLES non-owner Labor user → 403. (6) PATCH /responses/{id}/read sets read_at; PATCH .../unread clears it; POST .../archive sets archived=true (default list excludes it); DELETE removes from DB; bad id → 404 on all 4 verbs; Labor user → 403 on PATCH read, archive, DELETE; no-token → 401/403 on all 4. (7) PATCH /api/reports/{id}/projects/{pid}/summary sets summary; empty string → stores null (clears); 1001-char body → 422 (max_length 1000); unknown project_id → 404; no auth → 401. (8) Regression: GET /api/reports still 200; legacy POST /api/reports still creates submitted reports and new ProjectEntry.summary field is present and defaults to null; draft lifecycle (GET/PUT/DELETE /api/reports/draft and /draft/today) still works end-to-end. Auth is enforced on every new authed endpoint. No critical issues found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/public/reports/{token}/respond",
+        "issue": "Public endpoint is completely unauthenticated and unrate-limited. Any party that obtains a public_token (24 bytes url-safe) can POST unlimited messages up to 5000 chars each, which (a) notifies the owner by email on every submission (Resend-backed, costs money) and (b) can flood the responses collection. Consider per-token or per-IP rate limiting (e.g. 10/min) and a simple CAPTCHA/honeypot. Reference: /app/backend/server.py:2528-2591."
+      },
+      {
+        "endpoint": "POST /api/public/reports/{token}/respond — email notification",
+        "issue": "Notification email is sent on EVERY response (best-effort try/except). On a public portal that could spam the author if a bot or recipient submits repeatedly. No throttle/dedupe. Also, send_email is awaited inside the request path so a slow Resend call will delay the HTTP 200 to the public user. Consider BackgroundTasks for the email send. Reference: /app/backend/server.py:2567-2589."
+      },
+      {
+        "endpoint": "PATCH /api/responses/{id}/read, /unread, POST /archive",
+        "issue": "Three near-identical handlers each do update_one then find_one (non-atomic) — same race condition pattern flagged in iteration 20 for /reports/draft/submit. If the response is deleted between update and find, final is None and ReportResponse(**doc) will 500 with TypeError. Prefer find_one_and_update(..., return_document=ReturnDocument.AFTER). Reference: /app/backend/server.py:2644-2672."
+      },
+      {
+        "endpoint": "GET /api/public/reports/{token}",
+        "issue": "HTML response is not sanitized for ai_summary/notes/summary beyond escape() of individual fields — which is fine — but newline-to-<br> is applied AFTER escape() so the output is safe. However, Content-Security-Policy, X-Frame-Options and X-Content-Type-Options headers are absent, so the portal can be iframed on any origin and the inline <script> runs with no CSP. Low risk since there's no user token in the page, but consider adding security headers to the HTMLResponse."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration21_responses_summary.py",
+    "/app/test_reports/pytest/pytest_iteration21.xml"
+  ],
+  "action_items": [
+    "(Minor) Add rate limiting + background email send on POST /api/public/reports/{token}/respond — it is a fully-public endpoint that currently triggers a synchronous Resend email on every call.",
+    "(Minor) Replace update_one→find_one in /responses/{id}/read, /unread and /archive with find_one_and_update(..., return_document=ReturnDocument.AFTER) to avoid the same concurrent-delete 500 race flagged in iteration 20 for /reports/draft/submit.",
+    "(Nice-to-have) Consider security headers (CSP, X-Frame-Options, X-Content-Type-Options) on the public HTML portal response.",
+    "(Code-review) server.py is now 2993 lines (grew from 2615 last iteration). Please split into routers (reports, responses, drafts, public, auth, weather, email) — well past the 700-line guideline."
+  ],
+  "critical_code_review_comments": [
+    "server.py grew from 2615 → 2993 lines in one iteration. Response/mail/public-portal code adds ~400 lines in a single module. Split into routers soon — regression risk is climbing.",
+    "FULL_ROLES set is redefined inline in 7+ handlers (list_responses, unread_response_count, _response_owner_check, _report_owner_check, list_reports, get_report, etc.). Extract as a module-level constant to prevent drift (e.g. one handler forgetting PROJECT_MANAGER).",
+    "_render_public_report_html is 100+ lines of inline HTML + CSS + JS in a Python f-string. Hard to maintain and lint. Prefer Jinja2 template rendered via FastAPI's Jinja2Templates to get syntax highlighting, autoescape and reusable layout.",
+    "PublicRespond has max_length=5000 on message but no caps on reporter_name / reporter_email length (EmailStr caps email). Add max_length to reporter_name (e.g. 120) to prevent abuse.",
+    "ProjectEntry.summary (new field) has no explicit max_length. The PATCH endpoint enforces 1000 chars via ProjectSummaryPatch but POST /reports can inject arbitrarily large summary via projects[].summary bypass. Mirror the 1000 limit on the model.",
+    "Public portal exposes report_user_id in the ReportResponse POST reply body — this is an internal user id. Not a secret, but consider dropping it from the public response (the external caller doesn't need it)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration21_responses_summary.py (new)",
+    "/app/test_reports/pytest/pytest_iteration21.xml (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (27/27 pytest cases)",
+    "frontend": "not tested per request"
+  },
+  "seed_data_creation": "Transient test data only. Each test creates 1 submitted report via POST /api/reports (prefixed TEST_IT21_) and mints a public_token via POST /api/reports/{id}/portal-link. Submitted reports are NOT deleted (no cleanup endpoint used). Responses are wiped between tests by an autouse fixture that lists all admin-visible responses (include_archived=true) and DELETEs them. One Labor user (email test_it21_labor_<hex>@paintops.com) is created in session scope and deleted at session teardown via DELETE /api/admin/users/{id}. Expect ~a handful of TEST_IT21 reports to accumulate under the admin user after each run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend URL is still EXPO_PUBLIC_BACKEND_URL in /app/frontend/.env (NOT EXPO_BACKEND_URL). conftest.py loads it via python-dotenv. Run this test file serially with `-o addopts=\"\"` because the autouse cleanup fixture DELETEs all admin-visible responses between tests, which under pytest-xdist loadscope would wipe other workers' in-flight responses and flake. The admin user is Owner+is_admin=true, which is in FULL_ROLES — admin sees ALL responses across the DB, not just their own. To test non-FULL_ROLES 403s, create a Labor/Sales/Production user via POST /api/admin/users (see labor_user fixture). Public portal tokens are minted via POST /api/reports/{id}/portal-link (returns {token}); the public GET/POST public endpoints are mounted under /api/public/... so they still go through the ingress /api → :8001 route. The notification email on POST /public/.../respond is best-effort try/except and will NOT fail the request if Resend rejects.",
+  "rca_of_issue": "No functional bugs found. Four minor latent robustness/security observations: (a) public respond endpoint has no rate limiting and triggers a synchronous Resend email per call; (b) read/unread/archive handlers repeat the same non-atomic update_one→find_one race pattern previously flagged on draft/submit; (c) public HTML portal response is missing security headers; (d) server.py has grown to 2993 lines and should be split into routers."
+}

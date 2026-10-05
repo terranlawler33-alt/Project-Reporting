@@ -1,5 +1,6 @@
 import { View, Text, StyleSheet, Pressable, TextInput } from "react-native";
-import { PRIORITY_LEVELS, PRIORITY_FLAGS, flagRequiresReason, priorityLevelColor } from "@/src/priority";
+import { PRIORITY_LEVELS, priorityLevelColor } from "@/src/priority";
+import { useCustomLists } from "@/src/hooks/useCustomLists";
 import { colors, spacing, radius } from "@/src/theme";
 
 export type PriorityFlagEntry = { type: string; reason?: string };
@@ -15,6 +16,7 @@ export function PriorityPicker({
   flags: PriorityFlagEntry[];
   onFlagsChange: (next: PriorityFlagEntry[]) => void;
 }) {
+  const { priority_flags } = useCustomLists();
   const isFlagSelected = (t: string) => flags.some((f) => f.type === t);
 
   const toggleFlag = (t: string) => {
@@ -68,7 +70,7 @@ export function PriorityPicker({
 
       <Text style={styles.label}>Flag details for the owner (select any)</Text>
       <View style={styles.flagList}>
-        {PRIORITY_FLAGS.map((f) => {
+        {priority_flags.map((f) => {
           const selected = isFlagSelected(f.type);
           const entry = flags.find((x) => x.type === f.type);
           return (

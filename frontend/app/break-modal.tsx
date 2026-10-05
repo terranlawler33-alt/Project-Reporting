@@ -15,24 +15,28 @@ import { useRouter } from "expo-router";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import { api } from "@/src/api";
 import { colors, spacing, radius } from "@/src/theme";
-
-const TYPES = ["Bathroom", "Lunch", "Personal", "Admin Call"] as const;
+import { useCustomLists } from "@/src/hooks/useCustomLists";
 
 export default function BreakModal() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const [type, setType] = useState<(typeof TYPES)[number]>("Bathroom");
+  const { break_types } = useCustomLists();
+  const initial = break_types[0] || "Bathroom";
+  const [type, setType] = useState<string>(initial);
   const [reason, setReason] = useState("");
   const [callDetails, setCallDetails] = useState("");
   const [saving, setSaving] = useState(false);
+
+  // Keep the selected type valid when custom lists load in.
+  const selected = break_types.includes(type) ? type : (break_types[0] || "Bathroom");
 
   const save = async () => {
     setSaving(true);
     try {
       await api.startBreak({
-        break_type: type,
-        reason: reason || type,
-        call_details: type === "Admin Call" ? callDetails : null,
+        break_type: selected,
+        reason: reason || selected,
+        call_details: selected === "Admin Call" ? callDetails : null,
       });
       router.back();
     } finally {
@@ -56,14 +60,14 @@ export default function BreakModal() {
       <ScrollView contentContainerStyle={{ padding: spacing.lg }} keyboardShouldPersistTaps="handled">
         <Text style={styles.label}>Break Type</Text>
         <View style={styles.grid}>
-          {TYPES.map((t) => (
+          {break_types.map((t) => (
             <Pressable
               key={t}
               testID={`break-type-${t}`}
               onPress={() => setType(t)}
-              style={[styles.chip, type === t && styles.chipSelected]}
+              style={[styles.chip, selected === t && styles.chipSelected]}
             >
-              <Text style={[styles.chipText, type === t && styles.chipTextSelected]}>{t}</Text>
+              <Text style={[styles.chipText, selected === t && styles.chipTextSelected]}>{t}</Text>
             </Pressable>
           ))}
         </View>
@@ -79,7 +83,7 @@ export default function BreakModal() {
           multiline
         />
 
-        {type === "Admin Call" && (
+        {selected === "Admin Call" && (
           <>
             <Text style={styles.label}>Call Details</Text>
             <TextInput

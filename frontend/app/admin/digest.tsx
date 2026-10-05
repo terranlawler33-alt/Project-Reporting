@@ -227,13 +227,29 @@ export default function WeeklyDigest() {
 
           <View style={styles.timeRow}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.label}>Hour (0-23)</Text>
+              <Text style={styles.label}>Hour (1-12)</Text>
               <TextInput
                 testID="sched-hour"
-                value={schedHour}
-                onChangeText={setSchedHour}
+                value={(() => {
+                  const h = parseInt(schedHour) || 0;
+                  const h12 = h % 12 === 0 ? 12 : h % 12;
+                  return String(h12);
+                })()}
+                onChangeText={(t) => {
+                  // update the stored 0-23 hour based on this 1-12 input, preserving AM/PM
+                  const raw = t.replace(/\D/g, "");
+                  if (!raw) {
+                    setSchedHour("");
+                    return;
+                  }
+                  let h12 = Math.min(12, Math.max(1, parseInt(raw)));
+                  const isPm = parseInt(schedHour) >= 12;
+                  const h24 = isPm ? (h12 === 12 ? 12 : h12 + 12) : (h12 === 12 ? 0 : h12);
+                  setSchedHour(String(h24));
+                }}
                 keyboardType="numeric"
                 style={styles.input}
+                maxLength={2}
               />
             </View>
             <View style={{ flex: 1 }}>
@@ -244,9 +260,59 @@ export default function WeeklyDigest() {
                 onChangeText={setSchedMinute}
                 keyboardType="numeric"
                 style={styles.input}
+                maxLength={2}
               />
             </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.label}>AM / PM</Text>
+              <View style={styles.periodRow}>
+                {(["AM", "PM"] as const).map((p) => {
+                  const h = parseInt(schedHour) || 0;
+                  const isPm = h >= 12;
+                  const active = (p === "PM") === isPm;
+                  return (
+                    <Pressable
+                      key={p}
+                      testID={`sched-period-${p}`}
+                      onPress={() => {
+                        const currentIsPm = (parseInt(schedHour) || 0) >= 12;
+                        if ((p === "PM") === currentIsPm) return;
+                        // Toggle: adjust by ±12
+                        const h24 = (parseInt(schedHour) || 0);
+                        const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+                        const newHour = p === "PM"
+                          ? (h12 === 12 ? 12 : h12 + 12)
+                          : (h12 === 12 ? 0 : h12);
+                        setSchedHour(String(newHour));
+                      }}
+                      style={[styles.periodChip, active && styles.periodChipActive]}
+                    >
+                      <Text
+                        style={[
+                          styles.periodChipText,
+                          active && { color: colors.onBrandPrimary },
+                        ]}
+                      >
+                        {p}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
           </View>
+
+          <Text style={styles.timeHint} testID="sched-time-preview">
+            Will run every{" "}
+            {DAYS.find((d) => d.key === schedDay)?.label || "week"} at{" "}
+            {(() => {
+              const h = parseInt(schedHour) || 0;
+              const h12 = h % 12 === 0 ? 12 : h % 12;
+              const mm = (parseInt(schedMinute) || 0).toString().padStart(2, "0");
+              const period = h >= 12 ? "PM" : "AM";
+              return `${h12}:${mm} ${period}`;
+            })()}
+          </Text>
 
           <Text style={styles.label}>Recipient emails (comma-separated)</Text>
           <RecipientGroupPicker
@@ -378,6 +444,31 @@ const styles = StyleSheet.create({
   dayChipActive: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
   dayChipText: { color: colors.onSurface, fontWeight: "700", fontSize: 12 },
   timeRow: { flexDirection: "row", gap: spacing.sm },
+  periodRow: {
+    flexDirection: "row",
+    gap: 4,
+    height: 44,
+    backgroundColor: colors.surfaceTertiary,
+    borderRadius: radius.md,
+    padding: 3,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  periodChip: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.md - 2,
+  },
+  periodChipActive: { backgroundColor: colors.brandPrimary },
+  periodChipText: { color: colors.onSurface, fontWeight: "800", fontSize: 13 },
+  timeHint: {
+    color: colors.muted,
+    fontSize: 12,
+    fontStyle: "italic",
+    marginTop: spacing.xs,
+    textAlign: "center",
+  },
   schedMsg: {
     color: colors.success,
     fontSize: 12,

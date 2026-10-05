@@ -76,6 +76,13 @@ export default function ProfileScreen() {
 
         <Section title="Account">
           <Row
+            testID="settings-lists-nav"
+            icon="options"
+            title="Custom Lists"
+            subtitle="Add, edit or delete break types & priority flags"
+            onPress={() => router.push("/profile/settings")}
+          />
+          <Row
             testID="logout-button"
             icon="log-out"
             title="Sign out"

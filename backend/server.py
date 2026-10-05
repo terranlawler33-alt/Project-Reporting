@@ -5,6 +5,7 @@ import ipaddress
 import logging
 import io
 import csv
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -25,7 +26,7 @@ import base64 as _b64
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, status, Request, APIRouter, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import StreamingResponse, Response, HTMLResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, EmailStr, Field
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -192,6 +193,7 @@ class ProjectEntry(BaseModel):
     photos: List[str] = []
     visit_ids: List[str] = []
     weather: Optional[dict] = None  # site-specific weather snapshot at check-in
+    summary: Optional[str] = None  # short "virtual layout" of the job — written at sell/conception
 
 
 class ReportCreate(BaseModel):
@@ -230,6 +232,7 @@ class DailyReport(BaseModel):
     weather: Optional[dict] = None
     email_sent_to: List[str] = []
     created_at: str
+    updated_at: Optional[str] = None
     signature: Optional[dict] = None
     archived: bool = False
     archived_at: Optional[str] = None
@@ -238,6 +241,30 @@ class DailyReport(BaseModel):
     priority_level: Optional[str] = None
     priority_flags: List[dict] = []
     projects: List[dict] = Field(default_factory=list)
+    # "draft" (work-in-progress, auto-saved through the day) or "submitted" (final).
+    # Legacy reports without this field are treated as "submitted" for backward compatibility.
+    status: str = "submitted"
+    include_weather: bool = True
+    include_visits: bool = True
+    include_breaks: bool = True
+    include_sms: bool = True
+    recipient_emails: List[str] = []
+
+
+class ReportResponse(BaseModel):
+    """A reply left on a shared report (typically on a flagged job) by an external recipient."""
+    id: str
+    report_id: str
+    report_user_id: str  # owner of the report (destination inbox)
+    project_id: Optional[str] = None  # which project (job) this reply targets
+    project_label: Optional[str] = None  # pre-rendered project title at reply time
+    project_flag: Optional[str] = None  # priority flag of the targeted project
+    reporter_name: Optional[str] = None
+    reporter_email: Optional[str] = None
+    message: str
+    created_at: str
+    read_at: Optional[str] = None
+    archived: bool = False
 
 
 # ---------- Auth helpers ----------
@@ -871,6 +898,30 @@ async def sms_today(request: Request, user: dict = Depends(current_user)):
     return [SmsLog(**d) for d in docs]
 
 
+class SmsLogBulkCreate(BaseModel):
+    items: List[SmsLogCreate]
+
+
+@api.post("/sms-logs/bulk", response_model=List[SmsLog])
+async def create_sms_logs_bulk(data: SmsLogBulkCreate, request: Request, user: dict = Depends(current_user)):
+    """Create multiple SMS logs in one call (used when importing texts from the phone)."""
+    if not data.items:
+        return []
+    now_iso = datetime.now(timezone.utc).isoformat()
+    docs: List[dict] = []
+    for entry in data.items:
+        d = entry.model_dump()
+        d.update({
+            "id": str(uuid4()),
+            "user_id": user["id"],
+            "timestamp": now_iso,
+        })
+        docs.append(d)
+    # insert_many copies so we don't mutate return docs with _id
+    await request.app.db.sms_logs.insert_many([d.copy() for d in docs])
+    return [SmsLog(**d) for d in docs]
+
+
 # ---------- Reports ----------
 async def build_ai_summary(context: dict) -> str:
     system = (
@@ -1145,9 +1196,20 @@ async def create_report(data: ReportCreate, request: Request, user: dict = Depen
         "priority_level": data.priority_level,
         "priority_flags": data.priority_flags,
         "projects": final_projects,
+        "status": "submitted",
+        "include_weather": data.include_weather,
+        "include_visits": data.include_visits,
+        "include_breaks": data.include_breaks,
+        "include_sms": data.include_sms,
+        "recipient_emails": [str(e) for e in data.recipient_emails],
     }
     await request.app.db.reports.insert_one(report.copy())
     report.pop("_id", None)
+
+    # Any existing draft for today should be cleared to avoid resurrection
+    await request.app.db.reports.delete_many(
+        {"user_id": user["id"], "report_date": today_iso, "status": "draft"},
+    )
 
     # Send emails to recipients
     if data.recipient_emails:
@@ -1163,6 +1225,231 @@ async def create_report(data: ReportCreate, request: Request, user: dict = Depen
             report["email_sent_to"] = sent
 
     return DailyReport(**report)
+
+
+# ---------- Draft Reports ----------
+# One rolling draft per user per day. Auto-saved silently as the user edits.
+# Submit flips status to "submitted" and triggers AI summary + email delivery.
+class DraftSave(BaseModel):
+    project_code: Optional[str] = None
+    project_name: Optional[str] = None
+    highlights: str = ""
+    delays: str = ""
+    change_orders: str = ""
+    material_notes: str = ""
+    include_weather: bool = True
+    include_visits: bool = True
+    include_breaks: bool = True
+    include_sms: bool = True
+    recipient_emails: List[EmailStr] = []
+    priority_level: Optional[str] = None
+    priority_flags: List[dict] = Field(default_factory=list)
+    projects: List[ProjectEntry] = Field(default_factory=list)
+
+
+def _draft_shell(user: dict, today_iso: str) -> dict:
+    """Blank draft shell with just metadata for a fresh day."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    return {
+        "id": str(uuid4()),
+        "user_id": user["id"],
+        "author_name": user["name"],
+        "author_role": user["role"],
+        "project_code": None,
+        "project_name": None,
+        "report_date": today_iso,
+        "ai_summary": "",
+        "highlights": "",
+        "delays": "",
+        "change_orders": "",
+        "material_notes": "",
+        "visits": [],
+        "breaks": [],
+        "sms_logs": [],
+        "weather": None,
+        "email_sent_to": [],
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "priority_level": None,
+        "priority_flags": [],
+        "projects": [],
+        "status": "draft",
+        "include_weather": True,
+        "include_visits": True,
+        "include_breaks": True,
+        "include_sms": True,
+        "recipient_emails": [],
+    }
+
+
+@api.get("/reports/draft/today")
+async def get_todays_draft(request: Request, user: dict = Depends(current_user)):
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    doc = await request.app.db.reports.find_one(
+        {"user_id": user["id"], "report_date": today_iso, "status": "draft", "deleted_at": None},
+        {"_id": 0},
+    )
+    if not doc:
+        return None
+    if not doc.get("projects"):
+        doc["projects"] = []
+    return DailyReport(**doc)
+
+
+@api.put("/reports/draft", response_model=DailyReport)
+async def save_todays_draft(data: DraftSave, request: Request, user: dict = Depends(current_user)):
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    existing = await request.app.db.reports.find_one(
+        {"user_id": user["id"], "report_date": today_iso, "status": "draft", "deleted_at": None},
+        {"_id": 0},
+    )
+    payload_projects = [p.model_dump() for p in (data.projects or [])]
+    update_fields = {
+        "project_code": data.project_code,
+        "project_name": data.project_name,
+        "highlights": data.highlights,
+        "delays": data.delays,
+        "change_orders": data.change_orders,
+        "material_notes": data.material_notes,
+        "include_weather": data.include_weather,
+        "include_visits": data.include_visits,
+        "include_breaks": data.include_breaks,
+        "include_sms": data.include_sms,
+        "recipient_emails": [str(e) for e in data.recipient_emails],
+        "priority_level": data.priority_level,
+        "priority_flags": data.priority_flags,
+        "projects": payload_projects,
+        "updated_at": now_iso,
+    }
+    if existing:
+        await request.app.db.reports.update_one(
+            {"id": existing["id"]}, {"$set": update_fields},
+        )
+        fresh = await request.app.db.reports.find_one({"id": existing["id"]}, {"_id": 0})
+        return DailyReport(**fresh)
+
+    shell = _draft_shell(user, today_iso)
+    shell.update(update_fields)
+    await request.app.db.reports.insert_one(shell.copy())
+    shell.pop("_id", None)
+    return DailyReport(**shell)
+
+
+@api.post("/reports/draft/submit", response_model=DailyReport)
+async def submit_todays_draft(request: Request, user: dict = Depends(current_user)):
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    draft = await request.app.db.reports.find_one(
+        {"user_id": user["id"], "report_date": today_iso, "status": "draft", "deleted_at": None},
+        {"_id": 0},
+    )
+    if not draft:
+        raise HTTPException(404, "No draft found for today")
+
+    # Pull latest aggregated data at submit time (fresh snapshots)
+    visits, breaks, sms_logs, weather = [], [], [], None
+    if draft.get("include_visits", True):
+        visits = await request.app.db.visits.find(
+            {"user_id": user["id"], "timestamp": {"$gte": day_start}}, {"_id": 0},
+        ).to_list(500)
+    if draft.get("include_breaks", True):
+        breaks = await request.app.db.breaks.find(
+            {"user_id": user["id"], "started_at": {"$gte": day_start}}, {"_id": 0},
+        ).to_list(500)
+    if draft.get("include_sms", True):
+        sms_logs = await request.app.db.sms_logs.find(
+            {"user_id": user["id"], "timestamp": {"$gte": day_start}}, {"_id": 0},
+        ).to_list(500)
+    if draft.get("include_weather", True) and visits:
+        first = visits[-1]
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    "https://api.open-meteo.com/v1/forecast",
+                    params={
+                        "latitude": first["latitude"],
+                        "longitude": first["longitude"],
+                        "current": "temperature_2m,precipitation,wind_speed_10m,weather_code",
+                        "temperature_unit": "fahrenheit",
+                        "wind_speed_unit": "mph",
+                    },
+                )
+            if r.status_code == 200:
+                c = r.json().get("current", {})
+                weather = {
+                    "temperature_f": c.get("temperature_2m"),
+                    "wind_mph": c.get("wind_speed_10m"),
+                    "precipitation": c.get("precipitation"),
+                    "conditions": "Fetched from Open-Meteo",
+                    "weather_code": c.get("weather_code"),
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                }
+        except Exception as e:
+            logger.warning(f"Weather for draft submit failed: {e}")
+
+    user_projects = draft.get("projects") or []
+    final_projects = user_projects if user_projects else _derive_projects_from_visits(visits)
+
+    ai_context = {
+        "author_name": user["name"],
+        "author_role": user["role"],
+        "report_date": today_iso,
+        "project_code": draft.get("project_code"),
+        "project_name": draft.get("project_name"),
+        "highlights": draft.get("highlights", ""),
+        "delays": draft.get("delays", ""),
+        "change_orders": draft.get("change_orders", ""),
+        "material_notes": draft.get("material_notes", ""),
+        "visits": visits,
+        "breaks": breaks,
+        "sms_logs": sms_logs,
+        "weather": weather,
+        "priority_level": draft.get("priority_level"),
+        "priority_flags": draft.get("priority_flags", []),
+        "projects": final_projects,
+    }
+    ai_summary = await build_ai_summary(ai_context)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    submit_updates = {
+        "ai_summary": ai_summary,
+        "visits": visits,
+        "breaks": breaks,
+        "sms_logs": sms_logs,
+        "weather": weather,
+        "projects": final_projects,
+        "status": "submitted",
+        "updated_at": now_iso,
+        "created_at": draft.get("created_at", now_iso),
+    }
+    await request.app.db.reports.update_one({"id": draft["id"]}, {"$set": submit_updates})
+    final = await request.app.db.reports.find_one({"id": draft["id"]}, {"_id": 0})
+
+    # Send emails
+    recipients = final.get("recipient_emails") or []
+    if recipients:
+        sent = []
+        for email in recipients:
+            html = _report_email_html(final)
+            subject = f"Daily Report — {final['author_name']} — {today_iso}"
+            eid = await send_email(to=str(email), subject=subject, html=html)
+            if eid:
+                sent.append(str(email))
+        if sent:
+            await request.app.db.reports.update_one({"id": final["id"]}, {"$set": {"email_sent_to": sent}})
+            final["email_sent_to"] = sent
+
+    return DailyReport(**final)
+
+
+@api.delete("/reports/draft")
+async def discard_todays_draft(request: Request, user: dict = Depends(current_user)):
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    res = await request.app.db.reports.delete_many(
+        {"user_id": user["id"], "report_date": today_iso, "status": "draft"},
+    )
+    return {"ok": True, "removed": res.deleted_count}
 
 
 def _summary_to_email_html(summary: str) -> str:
@@ -1282,7 +1569,7 @@ def _report_email_html(report: dict) -> str:
 
 
 @api.get("/reports", response_model=List[DailyReport])
-async def list_reports(request: Request, user: dict = Depends(current_user), include_archived: bool = False):
+async def list_reports(request: Request, user: dict = Depends(current_user), include_archived: bool = False, include_drafts: bool = False):
     FULL_ROLES = {Role.OWNER.value, Role.OPERATIONS.value, Role.PROJECT_MANAGER.value}
     if user["role"] in FULL_ROLES or user.get("is_admin"):
         query: dict = {}
@@ -1291,6 +1578,9 @@ async def list_reports(request: Request, user: dict = Depends(current_user), inc
     query["deleted_at"] = None
     if not include_archived:
         query["$or"] = [{"archived": False}, {"archived": {"$exists": False}}]
+    if not include_drafts:
+        # Treat missing status as "submitted" for legacy backward compatibility
+        query["$and"] = [{"$or": [{"status": {"$ne": "draft"}}, {"status": {"$exists": False}}]}]
     docs = await request.app.db.reports.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
     # Backward compat: if a legacy report has no `projects`, derive from visits on the fly
     for d in docs:
@@ -1724,6 +2014,103 @@ class RecipientGroup(BaseModel):
     created_at: str
 
 
+DEFAULT_BREAK_TYPES = ["Bathroom", "Lunch", "Personal", "Admin Call"]
+DEFAULT_PRIORITY_FLAGS = [
+    {"type": "Change Order", "requires_reason": False},
+    {"type": "Customer Escalation (Owner Level)", "requires_reason": False},
+    {"type": "Customer Escalation (PM Level)", "requires_reason": False},
+    {"type": "Scope of Work Dispute", "requires_reason": True},
+    {"type": "Labor Issue", "requires_reason": True},
+    {"type": "Property Damage", "requires_reason": True},
+    {"type": "Schedule Conflict", "requires_reason": True},
+    {"type": "Missing Project Details", "requires_reason": False},
+    {"type": "Delay of Payment", "requires_reason": True},
+    {"type": "Wrong Materials", "requires_reason": False},
+    {"type": "Touch-Ups", "requires_reason": False},
+]
+
+
+class UserListsPayload(BaseModel):
+    break_types: List[str] = Field(default_factory=list)
+    priority_flags: List[dict] = Field(default_factory=list)
+
+
+@api.get("/settings/lists")
+async def get_user_lists(request: Request, user: dict = Depends(current_user)):
+    """Return the current user's customizable pickable lists (break types + priority flags).
+    Falls back to sensible defaults on first read.
+    """
+    doc = await request.app.db.user_settings.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not doc:
+        return {
+            "break_types": list(DEFAULT_BREAK_TYPES),
+            "priority_flags": list(DEFAULT_PRIORITY_FLAGS),
+            "is_default": True,
+        }
+    return {
+        "break_types": doc.get("break_types") or list(DEFAULT_BREAK_TYPES),
+        "priority_flags": doc.get("priority_flags") or list(DEFAULT_PRIORITY_FLAGS),
+        "is_default": False,
+    }
+
+
+@api.put("/settings/lists")
+async def put_user_lists(
+    data: UserListsPayload,
+    request: Request,
+    user: dict = Depends(current_user),
+):
+    seen: set = set()
+    breaks: List[str] = []
+    for b in data.break_types:
+        s = (b or "").strip()
+        if not s:
+            continue
+        k = s.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        breaks.append(s[:40])
+
+    seen_f: set = set()
+    flags: List[dict] = []
+    for f in data.priority_flags:
+        t = str(f.get("type") or "").strip()
+        if not t:
+            continue
+        k = t.lower()
+        if k in seen_f:
+            continue
+        seen_f.add(k)
+        flags.append({
+            "type": t[:60],
+            "requires_reason": bool(f.get("requires_reason", False)),
+        })
+
+    await request.app.db.user_settings.update_one(
+        {"user_id": user["id"]},
+        {"$set": {
+            "user_id": user["id"],
+            "break_types": breaks,
+            "priority_flags": flags,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    return {"break_types": breaks, "priority_flags": flags, "is_default": False}
+
+
+@api.post("/settings/lists/reset")
+async def reset_user_lists(request: Request, user: dict = Depends(current_user)):
+    await request.app.db.user_settings.delete_one({"user_id": user["id"]})
+    return {
+        "break_types": list(DEFAULT_BREAK_TYPES),
+        "priority_flags": list(DEFAULT_PRIORITY_FLAGS),
+        "is_default": True,
+    }
+
+
+
 @api.post("/recipient-groups", response_model=RecipientGroup, status_code=201)
 async def create_group(data: RecipientGroupCreate, request: Request, admin: dict = Depends(admin_only)):
     doc = {
@@ -2123,22 +2510,381 @@ async def revoke_portal_link(report_id: str, request: Request, user: dict = Depe
     return {"ok": True}
 
 
-@api.get("/public/reports/{token}")
+@api.get("/public/reports/{token}", response_class=HTMLResponse)
 async def public_report(token: str, request: Request):
     doc = await request.app.db.reports.find_one({"public_token": token, "deleted_at": None}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Not found")
-    # Return a limited public view
-    return {
-        "report_date": doc["report_date"],
-        "author_name": doc["author_name"],
-        "author_role": doc["author_role"],
-        "project_name": doc.get("project_name"),
-        "project_code": doc.get("project_code"),
-        "ai_summary": doc["ai_summary"],
-        "signature": doc.get("signature"),
-        "created_at": doc["created_at"],
+    return HTMLResponse(_render_public_report_html(doc, token))
+
+
+class PublicRespond(BaseModel):
+    project_id: Optional[str] = None
+    reporter_name: Optional[str] = None
+    reporter_email: Optional[EmailStr] = None
+    message: str = Field(min_length=1, max_length=5000)
+
+
+@api.post("/public/reports/{token}/respond", response_model=ReportResponse)
+async def public_respond(token: str, data: PublicRespond, request: Request):
+    report = await request.app.db.reports.find_one({"public_token": token, "deleted_at": None}, {"_id": 0})
+    if not report:
+        raise HTTPException(404, "Report not found")
+
+    project_label = None
+    project_flag = None
+    if data.project_id:
+        for p in report.get("projects", []) or []:
+            if p.get("id") == data.project_id:
+                project_label = (
+                    p.get("project_name")
+                    or p.get("customer_name")
+                    or p.get("project_code")
+                    or (p.get("address") or "")[:60]
+                    or f"Project {data.project_id[:6]}"
+                )
+                project_flag = p.get("priority_flag")
+                break
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid4()),
+        "report_id": report["id"],
+        "report_user_id": report["user_id"],
+        "project_id": data.project_id,
+        "project_label": project_label,
+        "project_flag": project_flag,
+        "reporter_name": (data.reporter_name or "").strip() or None,
+        "reporter_email": str(data.reporter_email) if data.reporter_email else None,
+        "message": data.message.strip(),
+        "created_at": now_iso,
+        "read_at": None,
+        "archived": False,
     }
+    await request.app.db.report_responses.insert_one(doc.copy())
+    doc.pop("_id", None)
+
+    # Notify the report author by email (best-effort)
+    try:
+        subject = f"New reply on your daily report — {report['report_date']}"
+        who = doc["reporter_name"] or doc["reporter_email"] or "Someone"
+        job_line = f"Job: <b>{escape(project_label)}</b>" + (f" · flag: {escape(project_flag)}" if project_flag else "") if project_label else "General reply"
+        html_body = (
+            f'<table role="presentation" width="100%" style="font-family:Arial,sans-serif">'
+            f'<tr><td style="padding:24px">'
+            f'<h2 style="margin:0 0 10px 0;color:#111827">New reply on your report</h2>'
+            f'<p style="color:#374151;margin:0 0 8px 0">From: <b>{escape(who)}</b></p>'
+            f'<p style="color:#374151;margin:0 0 8px 0">{job_line}</p>'
+            f'<div style="background:#F3F4F6;border-radius:8px;padding:14px;color:#111827;line-height:1.6">'
+            f'{escape(doc["message"]).replace(chr(10), "<br>")}'
+            f'</div>'
+            f'<p style="font-size:12px;color:#6B7280;margin-top:16px">Open Summar-Eeze → Mail tab to reply or archive.</p>'
+            f'</td></tr></table>'
+        )
+        # look up author email
+        author = await request.app.db.users.find_one({"id": report["user_id"]}, {"_id": 0, "email": 1})
+        if author and author.get("email"):
+            await send_email(to=author["email"], subject=subject, html=html_body)
+    except Exception as e:
+        logger.warning(f"Response notification email failed: {e}")
+
+    return ReportResponse(**doc)
+
+
+@api.get("/responses", response_model=List[ReportResponse])
+async def list_responses(
+    request: Request,
+    user: dict = Depends(current_user),
+    include_archived: bool = False,
+    unread_only: bool = False,
+):
+    FULL_ROLES = {Role.OWNER.value, Role.OPERATIONS.value, Role.PROJECT_MANAGER.value}
+    if user["role"] in FULL_ROLES or user.get("is_admin"):
+        query: dict = {}
+    else:
+        query = {"report_user_id": user["id"]}
+    if not include_archived:
+        query["archived"] = {"$ne": True}
+    if unread_only:
+        query["read_at"] = None
+    docs = await request.app.db.report_responses.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return [ReportResponse(**d) for d in docs]
+
+
+@api.get("/responses/unread-count")
+async def unread_response_count(request: Request, user: dict = Depends(current_user)):
+    FULL_ROLES = {Role.OWNER.value, Role.OPERATIONS.value, Role.PROJECT_MANAGER.value}
+    if user["role"] in FULL_ROLES or user.get("is_admin"):
+        query: dict = {}
+    else:
+        query = {"report_user_id": user["id"]}
+    query["archived"] = {"$ne": True}
+    query["read_at"] = None
+    count = await request.app.db.report_responses.count_documents(query)
+    return {"count": count}
+
+
+@api.get("/reports/{report_id}/responses", response_model=List[ReportResponse])
+async def list_report_responses(report_id: str, request: Request, user: dict = Depends(current_user)):
+    await _report_owner_check(request, report_id, user)
+    docs = await request.app.db.report_responses.find({"report_id": report_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    return [ReportResponse(**d) for d in docs]
+
+
+async def _response_owner_check(request: Request, response_id: str, user: dict) -> dict:
+    doc = await request.app.db.report_responses.find_one({"id": response_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Response not found")
+    FULL_ROLES = {Role.OWNER.value, Role.OPERATIONS.value, Role.PROJECT_MANAGER.value}
+    if user["role"] not in FULL_ROLES and not user.get("is_admin") and doc["report_user_id"] != user["id"]:
+        raise HTTPException(403, "Not allowed")
+    return doc
+
+
+@api.patch("/responses/{response_id}/read", response_model=ReportResponse)
+async def mark_response_read(response_id: str, request: Request, user: dict = Depends(current_user)):
+    await _response_owner_check(request, response_id, user)
+    await request.app.db.report_responses.update_one(
+        {"id": response_id},
+        {"$set": {"read_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    doc = await request.app.db.report_responses.find_one({"id": response_id}, {"_id": 0})
+    return ReportResponse(**doc)
+
+
+@api.patch("/responses/{response_id}/unread", response_model=ReportResponse)
+async def mark_response_unread(response_id: str, request: Request, user: dict = Depends(current_user)):
+    await _response_owner_check(request, response_id, user)
+    await request.app.db.report_responses.update_one(
+        {"id": response_id}, {"$set": {"read_at": None}},
+    )
+    doc = await request.app.db.report_responses.find_one({"id": response_id}, {"_id": 0})
+    return ReportResponse(**doc)
+
+
+@api.post("/responses/{response_id}/archive", response_model=ReportResponse)
+async def archive_response(response_id: str, request: Request, user: dict = Depends(current_user)):
+    await _response_owner_check(request, response_id, user)
+    await request.app.db.report_responses.update_one(
+        {"id": response_id}, {"$set": {"archived": True}},
+    )
+    doc = await request.app.db.report_responses.find_one({"id": response_id}, {"_id": 0})
+    return ReportResponse(**doc)
+
+
+@api.delete("/responses/{response_id}")
+async def delete_response(response_id: str, request: Request, user: dict = Depends(current_user)):
+    await _response_owner_check(request, response_id, user)
+    await request.app.db.report_responses.delete_one({"id": response_id})
+    return {"ok": True}
+
+
+# Project-level summary PATCH — update a single project's `summary` on a report
+class ProjectSummaryPatch(BaseModel):
+    summary: Optional[str] = Field(default=None, max_length=1000)
+
+
+@api.patch("/reports/{report_id}/projects/{project_id}/summary", response_model=DailyReport)
+async def patch_project_summary(
+    report_id: str,
+    project_id: str,
+    patch: ProjectSummaryPatch,
+    request: Request,
+    user: dict = Depends(current_user),
+):
+    doc = await _report_owner_check(request, report_id, user)
+    projects = doc.get("projects") or []
+    hit = False
+    for p in projects:
+        if p.get("id") == project_id:
+            p["summary"] = (patch.summary or "").strip() or None
+            hit = True
+            break
+    if not hit:
+        raise HTTPException(404, "Project not found on this report")
+    await request.app.db.reports.update_one(
+        {"id": report_id},
+        {"$set": {"projects": projects, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    fresh = await request.app.db.reports.find_one({"id": report_id}, {"_id": 0})
+    return DailyReport(**fresh)
+
+
+def _render_public_report_html(doc: dict, token: str) -> str:
+    """Render a lightweight public-view HTML page with per-flagged-job Respond buttons."""
+    report_date = escape(str(doc.get("report_date") or ""))
+    author = escape(str(doc.get("author_name") or ""))
+    role = escape(str(doc.get("author_role") or ""))
+    title = escape(str(doc.get("project_name") or doc.get("project_code") or "Daily Report"))
+    ai_summary = escape(str(doc.get("ai_summary") or "")).replace("\n", "<br>")
+    projects = doc.get("projects") or []
+
+    def flag_badge(flag: Optional[str]) -> str:
+        if not flag:
+            return ""
+        return (
+            f'<span style="display:inline-block;padding:2px 8px;background:#FEE2E2;color:#B91C1C;'
+            f'border-radius:999px;font-size:11px;font-weight:700;margin-left:6px">{escape(flag)}</span>'
+        )
+
+    projects_html = ""
+    for p in projects:
+        pid = escape(str(p.get("id") or ""))
+        plabel = escape(str(
+            p.get("project_name") or p.get("customer_name") or p.get("project_code") or (p.get("address") or "")[:60] or "Job site"
+        ))
+        paddr = escape(str(p.get("address") or ""))
+        pnotes = escape(str(p.get("notes") or "")).replace("\n", "<br>")
+        psummary = escape(str(p.get("summary") or "")).replace("\n", "<br>")
+        pflag = p.get("priority_flag")
+        flagged = bool(pflag)
+        notes_block = (
+            f'<p style="margin:6px 0;color:#374151;line-height:1.55">{pnotes}</p>' if pnotes else ""
+        )
+        summary_block = (
+            f'<div style="margin-top:6px;padding:10px 12px;background:#FFF7ED;border-left:3px solid #F97316;'
+            f'border-radius:6px;color:#7C2D12;line-height:1.5;font-size:13px"><b>Job overview:</b> {psummary}</div>'
+            if psummary else ""
+        )
+        respond_button = (
+            f'<button class="respond-btn" data-pid="{pid}" data-plabel="{plabel}"'
+            f' style="margin-top:10px;padding:10px 16px;background:#F97316;color:#fff;border:none;'
+            f'border-radius:8px;font-weight:700;cursor:pointer">Respond to this job →</button>'
+            if flagged else ""
+        )
+        addr_html = (
+            f'<div style="color:#6B7280;font-size:12px;margin-top:2px">{paddr}</div>'
+            if paddr else ""
+        )
+        projects_html += (
+            f'<div class="card" style="background:#FFFFFF;border:1px solid #E5E7EB;border-radius:12px;'
+            f'padding:16px;margin-bottom:12px">'
+            f'<div style="font-weight:700;color:#111827;font-size:15px">{plabel}{flag_badge(pflag)}</div>'
+            f'{addr_html}'
+            f'{summary_block}'
+            f'{notes_block}'
+            f'{respond_button}'
+            f'</div>'
+        )
+
+    body = f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title} — {report_date}</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+          background:#F9FAFB; margin:0; padding:0; color:#111827; }}
+  .wrap {{ max-width: 720px; margin: 0 auto; padding: 24px 16px 60px; }}
+  h1 {{ font-size: 22px; margin:0 0 4px 0; }}
+  .meta {{ color:#6B7280; font-size: 13px; margin-bottom:16px }}
+  .summary {{ background:#F3F4F6; border-radius:12px; padding:16px; line-height:1.6; color:#111827; }}
+  .section-title {{ font-size:13px; letter-spacing:0.5px; text-transform:uppercase; color:#6B7280;
+                   margin:24px 0 10px; font-weight:700; }}
+  .modal-backdrop {{ position:fixed; inset:0; background:rgba(0,0,0,0.45); display:none;
+                    align-items:center; justify-content:center; padding:16px; z-index:50 }}
+  .modal {{ background:#fff; border-radius:16px; width:100%; max-width:460px; padding:20px;
+           box-shadow:0 20px 40px rgba(0,0,0,0.2) }}
+  .modal h3 {{ margin:0 0 2px 0; font-size:17px }}
+  .modal label {{ display:block; font-size:12px; font-weight:700; color:#6B7280; margin-top:12px }}
+  .modal input, .modal textarea {{ width:100%; padding:10px 12px; border:1px solid #E5E7EB;
+    border-radius:8px; font-size:14px; margin-top:4px; box-sizing:border-box; font-family:inherit }}
+  .modal textarea {{ min-height:110px; resize:vertical }}
+  .modal .row {{ display:flex; gap:10px; margin-top:16px; justify-content:flex-end }}
+  .btn {{ padding:10px 16px; border-radius:8px; font-weight:700; border:none; cursor:pointer; font-size:14px }}
+  .btn.secondary {{ background:#F3F4F6; color:#111827 }}
+  .btn.primary {{ background:#F97316; color:#fff }}
+  .status {{ margin-top:12px; font-size:13px }}
+  .status.ok {{ color:#059669 }}
+  .status.err {{ color:#B91C1C }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>{title}</h1>
+  <div class="meta">{author} · {role} · {report_date}</div>
+  <div class="summary">{ai_summary}</div>
+  {f'<div class="section-title">Jobs on this report</div>{projects_html}' if projects else ""}
+  <div class="section-title">General reply</div>
+  <button class="respond-btn btn primary" data-pid="" data-plabel="General reply"
+    style="padding:12px 18px">Send a general reply</button>
+</div>
+
+<div class="modal-backdrop" id="mb">
+  <div class="modal">
+    <h3 id="mTitle">Reply</h3>
+    <div style="color:#6B7280;font-size:12px" id="mSub"></div>
+    <label>Your name</label>
+    <input id="mName" placeholder="e.g. Jane Smith" />
+    <label>Your email</label>
+    <input id="mEmail" type="email" placeholder="you@example.com" />
+    <label>Message</label>
+    <textarea id="mMsg" placeholder="Your reply, questions, approvals…"></textarea>
+    <div class="status" id="mStatus"></div>
+    <div class="row">
+      <button class="btn secondary" id="mCancel">Cancel</button>
+      <button class="btn primary" id="mSend">Send reply</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {{
+  var token = {json.dumps(token)};
+  var mb = document.getElementById('mb');
+  var currentPid = null;
+  function open(pid, plabel) {{
+    currentPid = pid || null;
+    document.getElementById('mTitle').innerText = pid ? 'Reply to flagged job' : 'Send a general reply';
+    document.getElementById('mSub').innerText = plabel || '';
+    document.getElementById('mStatus').innerText = '';
+    document.getElementById('mStatus').className = 'status';
+    document.getElementById('mMsg').value = '';
+    mb.style.display = 'flex';
+  }}
+  function close() {{ mb.style.display = 'none'; }}
+  document.querySelectorAll('.respond-btn').forEach(function(btn) {{
+    btn.addEventListener('click', function() {{
+      open(btn.getAttribute('data-pid'), btn.getAttribute('data-plabel'));
+    }});
+  }});
+  document.getElementById('mCancel').addEventListener('click', close);
+  mb.addEventListener('click', function(e) {{ if (e.target === mb) close(); }});
+  document.getElementById('mSend').addEventListener('click', async function() {{
+    var name = document.getElementById('mName').value.trim();
+    var email = document.getElementById('mEmail').value.trim();
+    var msg = document.getElementById('mMsg').value.trim();
+    var status = document.getElementById('mStatus');
+    if (!msg) {{ status.className = 'status err'; status.innerText = 'Message is required.'; return; }}
+    status.className = 'status'; status.innerText = 'Sending…';
+    try {{
+      var r = await fetch('/api/public/reports/' + encodeURIComponent(token) + '/respond', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{
+          project_id: currentPid || null,
+          reporter_name: name || null,
+          reporter_email: email || null,
+          message: msg,
+        }})
+      }});
+      if (!r.ok) {{
+        var t = await r.text();
+        throw new Error(t || ('HTTP ' + r.status));
+      }}
+      status.className = 'status ok';
+      status.innerText = '✓ Reply delivered to the field team.';
+      setTimeout(close, 1400);
+    }} catch (e) {{
+      status.className = 'status err';
+      status.innerText = 'Could not send: ' + (e.message || e);
+    }}
+  }});
+}})();
+</script>
+</body></html>
+"""
+    return body
 
 
 # ---------- Digest Scheduler ----------

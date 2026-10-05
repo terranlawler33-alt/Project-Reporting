@@ -31,7 +31,11 @@ Owner, Operations, Sales, Production, Labor (Subcontractor), Project Manager. Ad
 
 ### Cross-cutting
 - **Offline queue**: caches visits/breaks/sms during network drops; flushes on next Home load.
-- **Portal share link**: `GET /api/public/reports/{token}` returns a limited public JSON view — no login required.
+- **Portal share link**: `GET /api/public/reports/{token}` returns a full **HTML** page with per-flagged-job "Respond" buttons and a general reply option; no login required.
+- **Mail inbox**: dedicated Mail tab receives recipient replies with unread badge, read/archive/delete actions, deep-link into the related report.
+- **Draft reports**: one rolling draft per day — auto-saves silently as the user edits; "Submit" finalizes it (AI summary + email). Resume banner on reports list.
+- **Android SMS import**: Android-only "Import from phone" (READ_SMS, needs native build); iOS shows greyed button with Apple-restriction note.
+- **Per-project Job Overview**: short summary attached to each project; shown on map pin tooltips, visit detail modal, and the public portal so the owner has a "virtual layout" of each sold job.
 
 ## Test credentials
 See `/app/memory/test_credentials.md`.

@@ -14,6 +14,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import { api } from "@/src/api";
+import { SmsImportSheet } from "@/src/components/SmsImportSheet";
+import { DeviceSms, isSmsAvailable } from "@/src/sms";
 import { colors, spacing, radius } from "@/src/theme";
 
 const CATEGORIES = [
@@ -36,6 +38,8 @@ export default function SmsLog() {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [form, setForm] = useState({
     contact_name: "",
     contact_role: "",
@@ -77,6 +81,26 @@ export default function SmsLog() {
     }
   };
 
+  const importFromPhone = async (msgs: DeviceSms[]) => {
+    if (msgs.length === 0) return;
+    setImporting(true);
+    try {
+      const items = msgs.map((m) => ({
+        contact_name: m.display_name || m.address || "Unknown",
+        contact_role: "Imported SMS",
+        channel: "SMS",
+        direction: "inbound",
+        category: "other",
+        content: m.body,
+        project_code: null,
+      }));
+      await api.createSmsBulk(items);
+      await load();
+    } finally {
+      setImporting(false);
+    }
+  };
+
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: colors.surface }}
@@ -90,6 +114,38 @@ export default function SmsLog() {
         <Pressable onPress={() => setShowForm((s) => !s)} testID="sms-add-toggle">
           <Ionicons name={showForm ? "close" : "add"} size={22} color={colors.brandPrimary} />
         </Pressable>
+      </View>
+
+      <View style={styles.importBar}>
+        <Pressable
+          testID="sms-import-open"
+          onPress={() => setShowImport(true)}
+          disabled={importing}
+          style={({ pressed }) => [
+            styles.importBtn,
+            pressed && { opacity: 0.85 },
+            !isSmsAvailable() && styles.importBtnDisabled,
+            importing && { opacity: 0.7 },
+          ]}
+        >
+          {importing ? (
+            <ActivityIndicator color={isSmsAvailable() ? colors.onBrandPrimary : colors.muted} size="small" />
+          ) : (
+            <Ionicons
+              name="phone-portrait"
+              size={16}
+              color={isSmsAvailable() ? colors.onBrandPrimary : colors.muted}
+            />
+          )}
+          <Text style={[styles.importBtnText, !isSmsAvailable() && { color: colors.muted }]}>
+            {importing ? "Importing…" : "Import from phone"}
+          </Text>
+        </Pressable>
+        {!isSmsAvailable() ? (
+          <Text style={styles.importHint}>Android only — Apple blocks SMS access on iPhone.</Text>
+        ) : (
+          <Text style={styles.importHint}>Pull texts from the last 7 days into today's log.</Text>
+        )}
       </View>
 
       <ScrollView
@@ -190,6 +246,13 @@ export default function SmsLog() {
           ))
         )}
       </ScrollView>
+
+      <SmsImportSheet
+        visible={showImport}
+        onClose={() => setShowImport(false)}
+        mode="sms-log"
+        onImportItems={importFromPhone}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -238,6 +301,30 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceSecondary,
   },
   headerTitle: { fontSize: 17, fontWeight: "700", color: colors.onSurface },
+  importBar: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    paddingBottom: 2,
+    backgroundColor: colors.surfaceSecondary,
+    gap: 4,
+  },
+  importBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    alignSelf: "flex-start",
+    backgroundColor: colors.brandPrimary,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+  },
+  importBtnDisabled: {
+    backgroundColor: colors.surfaceTertiary,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  importBtnText: { color: colors.onBrandPrimary, fontWeight: "700", fontSize: 12 },
+  importHint: { color: colors.muted, fontSize: 11 },
   form: {
     backgroundColor: colors.surfaceSecondary,
     borderRadius: radius.md,

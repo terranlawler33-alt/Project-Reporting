@@ -25,6 +25,10 @@ export default function ReportDetail() {
   const [saving, setSaving] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [loadingTts, setLoadingTts] = useState(false);
+  const [responses, setResponses] = useState<any[]>([]);
+  const [editingSummaryFor, setEditingSummaryFor] = useState<string | null>(null);
+  const [summaryDraft, setSummaryDraft] = useState("");
+  const [savingSummary, setSavingSummary] = useState(false);
   const sigRef = useRef<any>(null);
   const player = useAudioPlayer(audioUrl ?? null);
   const playerStatus = useAudioPlayerStatus(player);
@@ -34,6 +38,10 @@ export default function ReportDetail() {
     try {
       const r = await api.getReport(id);
       setReport(r);
+    } catch {}
+    try {
+      const resps = await api.listReportResponses(id);
+      setResponses(resps || []);
     } catch {}
   };
 
@@ -256,6 +264,138 @@ export default function ReportDetail() {
           </View>
           <StructuredSummary summary={report.ai_summary} />
         </View>
+
+        {report.projects?.length ? (
+          <MetaCard title={`Jobs on this report (${report.projects.length})`} testID="report-jobs">
+            {report.projects.map((p: any, idx: number) => {
+              const label =
+                p.project_name ||
+                p.customer_name ||
+                p.project_code ||
+                (p.address || "").slice(0, 60) ||
+                `Project ${idx + 1}`;
+              const jobResponses = responses.filter((r) => r.project_id === p.id);
+              const isEditing = editingSummaryFor === p.id;
+              return (
+                <View key={p.id || idx} style={styles.jobCard} testID={`report-job-${idx}`}>
+                  <View style={styles.jobCardHeader}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.jobTitle} numberOfLines={1}>{label}</Text>
+                      {p.address ? (
+                        <Text style={styles.jobAddr} numberOfLines={1}>{p.address}</Text>
+                      ) : null}
+                    </View>
+                    {p.priority_flag ? (
+                      <View style={styles.flagChip}>
+                        <Ionicons name="flag" size={10} color={colors.error} />
+                        <Text style={styles.flagChipText}>{p.priority_flag}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+
+                  {isEditing ? (
+                    <View>
+                      <TextInput
+                        testID={`job-summary-input-${idx}`}
+                        value={summaryDraft}
+                        onChangeText={setSummaryDraft}
+                        placeholder="E.g. 3-coat interior repaint, kitchen + living, 3-day job"
+                        placeholderTextColor={colors.muted}
+                        multiline
+                        style={styles.summaryInput}
+                      />
+                      <View style={styles.summaryBtnRow}>
+                        <Pressable
+                          testID={`job-summary-cancel-${idx}`}
+                          onPress={() => { setEditingSummaryFor(null); setSummaryDraft(""); }}
+                          style={styles.summarySecondary}
+                        >
+                          <Text style={styles.summarySecondaryText}>Cancel</Text>
+                        </Pressable>
+                        <Pressable
+                          testID={`job-summary-save-${idx}`}
+                          onPress={async () => {
+                            setSavingSummary(true);
+                            try {
+                              await api.patchProjectSummary(id!, p.id, summaryDraft.trim() || null);
+                              setEditingSummaryFor(null);
+                              setSummaryDraft("");
+                              await reload();
+                            } catch {}
+                            setSavingSummary(false);
+                          }}
+                          disabled={savingSummary}
+                          style={[styles.summaryPrimary, savingSummary && { opacity: 0.7 }]}
+                        >
+                          {savingSummary ? (
+                            <ActivityIndicator color={colors.onBrandPrimary} size="small" />
+                          ) : (
+                            <Text style={styles.summaryPrimaryText}>Save overview</Text>
+                          )}
+                        </Pressable>
+                      </View>
+                    </View>
+                  ) : p.summary ? (
+                    <Pressable
+                      onPress={() => { setEditingSummaryFor(p.id); setSummaryDraft(p.summary || ""); }}
+                      testID={`job-summary-edit-${idx}`}
+                      style={styles.summaryCard}
+                    >
+                      <View style={styles.summaryCardHead}>
+                        <Ionicons name="sparkles" size={11} color={colors.brandPrimary} />
+                        <Text style={styles.summaryCardLabel}>Job overview</Text>
+                        <Ionicons name="create-outline" size={13} color={colors.brandPrimary} />
+                      </View>
+                      <Text style={styles.summaryCardText}>{p.summary}</Text>
+                    </Pressable>
+                  ) : (
+                    <Pressable
+                      onPress={() => { setEditingSummaryFor(p.id); setSummaryDraft(""); }}
+                      testID={`job-summary-add-${idx}`}
+                      style={styles.addSummaryBtn}
+                    >
+                      <Ionicons name="add-circle-outline" size={14} color={colors.brandPrimary} />
+                      <Text style={styles.addSummaryText}>Add a job overview</Text>
+                    </Pressable>
+                  )}
+
+                  {p.notes ? (
+                    <Text style={styles.jobNotes} numberOfLines={3}>{p.notes}</Text>
+                  ) : null}
+
+                  {jobResponses.length > 0 ? (
+                    <View style={styles.repliesWrap}>
+                      <Text style={styles.repliesTitle}>
+                        {jobResponses.length} repl{jobResponses.length === 1 ? "y" : "ies"}
+                      </Text>
+                      {jobResponses.map((rp: any) => (
+                        <View key={rp.id} style={styles.replyRow}>
+                          <View style={[styles.replyDot, !rp.read_at && { backgroundColor: colors.error }]} />
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.replyFrom} numberOfLines={1}>
+                              {rp.reporter_name || rp.reporter_email || "Anonymous"}
+                            </Text>
+                            <Text style={styles.replyBody} numberOfLines={2}>
+                              {rp.message}
+                            </Text>
+                          </View>
+                        </View>
+                      ))}
+                      <Pressable
+                        onPress={() => router.push("/mail")}
+                        testID={`job-open-mail-${idx}`}
+                        style={styles.openMailLink}
+                      >
+                        <Ionicons name="mail" size={12} color={colors.brandPrimary} />
+                        <Text style={styles.openMailText}>Open Mail</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
+          </MetaCard>
+        ) : null}
 
         {report.weather && (
           <MetaCard title="Weather" testID="report-weather">
@@ -634,4 +774,141 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
   portalLink: { color: colors.onSurface, fontSize: 11, fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace" },
+  jobCard: {
+    backgroundColor: colors.surfaceSecondary,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  jobCardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginBottom: 6,
+  },
+  jobTitle: { color: colors.onSurface, fontWeight: "700", fontSize: 14 },
+  jobAddr: { color: colors.muted, fontSize: 11, marginTop: 1 },
+  flagChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: "#FEE2E2",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: radius.pill,
+  },
+  flagChipText: { color: colors.error, fontSize: 10, fontWeight: "700" },
+  summaryCard: {
+    marginTop: 4,
+    padding: 10,
+    backgroundColor: "#FFF7ED",
+    borderLeftWidth: 3,
+    borderLeftColor: colors.brandPrimary,
+    borderRadius: 6,
+  },
+  summaryCardHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginBottom: 4,
+  },
+  summaryCardLabel: {
+    color: colors.brandPrimary,
+    fontSize: 10,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    flex: 1,
+  },
+  summaryCardText: { color: colors.onSurface, fontSize: 13, lineHeight: 19 },
+  addSummaryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: colors.surfaceTertiary,
+    borderRadius: radius.pill,
+    alignSelf: "flex-start",
+    marginTop: 4,
+  },
+  addSummaryText: { color: colors.brandPrimary, fontWeight: "700", fontSize: 12 },
+  summaryInput: {
+    backgroundColor: colors.surfaceTertiary,
+    borderRadius: radius.md,
+    padding: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    minHeight: 70,
+    textAlignVertical: "top",
+    color: colors.onSurface,
+    fontSize: 13,
+    marginTop: 4,
+  },
+  summaryBtnRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 8,
+    marginTop: spacing.sm,
+  },
+  summarySecondary: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 7,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  summarySecondaryText: { color: colors.onSurface, fontWeight: "700", fontSize: 12 },
+  summaryPrimary: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 7,
+    backgroundColor: colors.brandPrimary,
+    borderRadius: radius.pill,
+  },
+  summaryPrimaryText: { color: colors.onBrandPrimary, fontWeight: "700", fontSize: 12 },
+  jobNotes: {
+    color: colors.onSurfaceTertiary,
+    fontSize: 12,
+    marginTop: 8,
+    lineHeight: 17,
+  },
+  repliesWrap: {
+    marginTop: spacing.sm,
+    paddingTop: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.divider,
+  },
+  repliesTitle: {
+    color: colors.muted,
+    fontSize: 10,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 6,
+  },
+  replyRow: {
+    flexDirection: "row",
+    gap: 8,
+    paddingVertical: 4,
+    alignItems: "flex-start",
+  },
+  replyDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.borderStrong,
+    marginTop: 6,
+  },
+  replyFrom: { color: colors.onSurface, fontWeight: "700", fontSize: 12 },
+  replyBody: { color: colors.onSurfaceTertiary, fontSize: 12, marginTop: 1 },
+  openMailLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 6,
+    alignSelf: "flex-start",
+  },
+  openMailText: { color: colors.brandPrimary, fontWeight: "700", fontSize: 11 },
 });

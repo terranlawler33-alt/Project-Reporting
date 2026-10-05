@@ -71,6 +71,45 @@ export const api = {
   getReport: (id: string) => apiRequest<any>(`/reports/${id}`),
   createReport: (payload: any) =>
     apiRequest<any>("/reports", { method: "POST", body: JSON.stringify(payload) }),
+  getDraftToday: () => apiRequest<any | null>("/reports/draft/today"),
+  saveDraft: (payload: any) =>
+    apiRequest<any>("/reports/draft", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  submitDraft: () =>
+    apiRequest<any>("/reports/draft/submit", { method: "POST" }),
+  discardDraft: () =>
+    apiRequest<{ ok: boolean; removed: number }>("/reports/draft", { method: "DELETE" }),
+  createSmsBulk: (items: any[]) =>
+    apiRequest<any[]>("/sms-logs/bulk", {
+      method: "POST",
+      body: JSON.stringify({ items }),
+    }),
+  // ---- Report Responses (Mail) ----
+  listResponses: (params?: { include_archived?: boolean; unread_only?: boolean }) => {
+    const q = new URLSearchParams();
+    if (params?.include_archived) q.set("include_archived", "true");
+    if (params?.unread_only) q.set("unread_only", "true");
+    const qs = q.toString();
+    return apiRequest<any[]>(`/responses${qs ? `?${qs}` : ""}`);
+  },
+  unreadResponseCount: () => apiRequest<{ count: number }>("/responses/unread-count"),
+  listReportResponses: (report_id: string) =>
+    apiRequest<any[]>(`/reports/${report_id}/responses`),
+  markResponseRead: (id: string) =>
+    apiRequest<any>(`/responses/${id}/read`, { method: "PATCH" }),
+  markResponseUnread: (id: string) =>
+    apiRequest<any>(`/responses/${id}/unread`, { method: "PATCH" }),
+  archiveResponse: (id: string) =>
+    apiRequest<any>(`/responses/${id}/archive`, { method: "POST" }),
+  deleteResponse: (id: string) =>
+    apiRequest<{ ok: boolean }>(`/responses/${id}`, { method: "DELETE" }),
+  patchProjectSummary: (report_id: string, project_id: string, summary: string | null) =>
+    apiRequest<any>(`/reports/${report_id}/projects/${project_id}/summary`, {
+      method: "PATCH",
+      body: JSON.stringify({ summary }),
+    }),
   listCustomers: () => apiRequest<any[]>("/customers"),
   createCustomer: (payload: any) =>
     apiRequest<any>("/customers", { method: "POST", body: JSON.stringify(payload) }),
@@ -193,4 +232,20 @@ export const api = {
   toggleBookmark: (visit_id: string) =>
     apiRequest<any>(`/visits/${visit_id}/bookmark`, { method: "POST" }),
   listBookmarks: () => apiRequest<any[]>("/visits/bookmarked"),
+  getUserLists: () =>
+    apiRequest<{
+      break_types: string[];
+      priority_flags: { type: string; requires_reason: boolean }[];
+      is_default: boolean;
+    }>("/settings/lists"),
+  putUserLists: (payload: {
+    break_types: string[];
+    priority_flags: { type: string; requires_reason: boolean }[];
+  }) =>
+    apiRequest<any>("/settings/lists", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  resetUserLists: () =>
+    apiRequest<any>("/settings/lists/reset", { method: "POST" }),
 };

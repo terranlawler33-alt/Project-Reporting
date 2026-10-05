@@ -1,0 +1,49 @@
+{
+  "summary": "Iteration 20 backend-only verification for Draft Reports lifecycle + SMS bulk import. All 23 pytest cases PASS (23/23, 50s). Covered: GET /reports/draft/today returns null when absent and returns the DailyReport after draft creation; PUT /reports/draft upserts (first PUT creates status=draft with updated_at, second PUT reuses same id, refreshes updated_at, preserves created_at); POST /reports/draft/submit returns 404 with no draft, otherwise flips status to 'submitted', preserves id, populates non-empty ai_summary, auto-pulls today's visits/breaks/sms_logs (verified via a seeded bulk SMS appearing in the submitted report), preserves created_at from the draft and populates email_sent_to when recipient_emails is provided (end-to-end verified with Resend sandbox address delivered@resend.dev — returned a real message id); DELETE /reports/draft clears today's draft and subsequent GET returns null; GET /reports excludes drafts by default and includes them when include_drafts=true; legacy POST /reports still returns an AI-summarized submitted report and cascades-delete any today's draft; POST /sms-logs/bulk returns [] on empty items and creates N logs that all appear in GET /sms-logs/today; auth is enforced (401/403) on all 5 new endpoints with no token. Regression on /api/reports, /api/visits/today, /api/breaks/today, /api/settings/lists, /api/weather, /api/weather/hourly, /api/geocode all 200.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/reports/draft/submit",
+        "issue": "Latent robustness: after update_one flips status to 'submitted', the handler re-fetches via find_one and dereferences final.get(...). If the draft is concurrently deleted (e.g. DELETE /reports/draft hitting the same user) between update_one and find_one, final is None and the request 500s with AttributeError (observed under parallel pytest workers using the same admin). Not a real-world bug for a single human user, but worth guarding against: either use find_one_and_update (atomic) or add `if not final: raise HTTPException(404, 'Draft disappeared mid-submit')`. Reference: /app/backend/server.py:1408-1412."
+      },
+      {
+        "endpoint": "POST /api/reports/draft/submit — email",
+        "issue": "Emergent Resend integration rejects undeliverable recipients with HTTP 422 ('Undeliverable recipient'). Submits still succeed because send_email swallows the exception and returns None, so email_sent_to ends up [] silently. The UI/user has no signal that delivery failed. Consider surfacing per-recipient failures in the response (e.g. email_failed_to) so the client can warn 'email not delivered'. Reference: /app/backend/server.py:387-389, 1413-1423."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration20_drafts_sms_bulk.py",
+    "/app/test_reports/pytest/pytest_iteration20.xml"
+  ],
+  "action_items": [
+    "(Minor) Make /reports/draft/submit resilient to concurrent draft deletion between update_one and find_one — either use find_one_and_update atomically, or null-check final before accessing it.",
+    "(Minor) Surface failed email recipients to the caller (new field like email_failed_to or non-200 partial response) so the UI can warn when Resend rejects an address."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 2615 lines — still growing. Draft, SMS-bulk, legacy /reports, weather, email, scheduler and auth all live in the same module. Please split into routers (reports, drafts, sms, weather, email, auth) to stay well below the 700-line guideline and make future testing easier.",
+    "DraftSave model has no cap on highlights/delays/change_orders/material_notes lengths and no cap on priority_flags[] / projects[] list sizes — a client can PUT megabytes into a single draft doc. Consider pydantic max_length and max_items to protect Mongo and the AI prompt payload.",
+    "PUT /reports/draft blindly accepts whatever the client sends and overwrites every field each call, including visits/breaks/sms_logs indirectly on submit. There is no server-side validation that project_code in payload matches an existing project. Low priority but worth noting for audit.",
+    "send_email failures are silent (logged and swallowed). Consider at minimum returning a count/list of failed recipients from the submit response so the mobile app can display 'Report submitted but email failed for 2 of 3 recipients'."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration20_drafts_sms_bulk.py (new)",
+    "/app/test_reports/pytest/pytest_iteration20.xml (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (23/23 pytest cases)",
+    "frontend": "not tested per request"
+  },
+  "seed_data_creation": "Transient test data only: a few draft documents and sms_logs tagged TEST_IT20_* under the admin user. Drafts are deleted by the autouse cleanup fixture (DELETE /api/reports/draft). Any submitted reports from the submit tests remain under the admin user — reports persist and were not purged (no admin cleanup endpoint for arbitrary reports used). SMS logs with TEST_IT20_ prefixes also persist for the day. No persistent seed/users created.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend URL is in EXPO_PUBLIC_BACKEND_URL (not EXPO_BACKEND_URL) in /app/frontend/.env — export it before running pytest. The project's pytest.ini defaults to pytest-xdist loadscope; this test file is NOT safe under parallel workers because all tests share the single admin user and the autouse DELETE fixture of one worker will delete another worker's in-flight draft (causing both the 'same id' upsert check and submit to fail). Always run it with `-o addopts=\"\"` to force serial execution (as the final run does). For email tests, use Resend's sandbox address `delivered@resend.dev` — the Emergent Resend integration rejects undeliverable recipients (e.g. admin@paintops.com) with HTTP 422 and send_email silently returns None, so email_sent_to will be [] in that case. Admin creds admin@paintops.com / Admin@12345 confirmed working.",
+  "rca_of_issue": "No functional bugs. Two latent robustness findings reported as minor: (a) /reports/draft/submit has a non-atomic update_one→find_one that can 500 if the draft is deleted concurrently (reproduced by parallel pytest workers; recommend find_one_and_update or null-check); (b) email failures from Resend are swallowed silently so email_sent_to is [] with no signal to the caller."
+}
