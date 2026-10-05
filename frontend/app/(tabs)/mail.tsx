@@ -9,6 +9,9 @@ import {
   ActivityIndicator,
   Modal,
   Alert,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Ionicons from "@react-native-vector-icons/ionicons";
@@ -55,6 +58,11 @@ export default function MailScreen() {
   const [showArchived, setShowArchived] = useState(false);
   const [filter, setFilter] = useState<"all" | "unread">("all");
   const [open, setOpen] = useState<Resp | null>(null);
+  const [thread, setThread] = useState<Resp[]>([]);
+  const [loadingThread, setLoadingThread] = useState(false);
+  const [replyText, setReplyText] = useState("");
+  const [sendingReply, setSendingReply] = useState(false);
+  const [replyError, setReplyError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -79,11 +87,35 @@ export default function MailScreen() {
 
   const openResponse = async (r: Resp) => {
     setOpen(r);
+    setReplyText("");
+    setReplyError(null);
+    setLoadingThread(true);
+    setThread([r]);
+    try {
+      const t = await api.getResponseThread(r.id);
+      setThread(t || [r]);
+    } catch {}
+    setLoadingThread(false);
     if (!r.read_at) {
       try {
         await api.markResponseRead(r.id);
         setItems((prev) => prev.map((x) => (x.id === r.id ? { ...x, read_at: new Date().toISOString() } : x)));
       } catch {}
+    }
+  };
+
+  const sendReply = async () => {
+    if (!open || !replyText.trim()) return;
+    setSendingReply(true);
+    setReplyError(null);
+    try {
+      const created = await api.replyToResponse(open.id, replyText.trim());
+      setThread((prev) => [...prev, created]);
+      setReplyText("");
+    } catch (e: any) {
+      setReplyError(e?.message || "Failed to send reply");
+    } finally {
+      setSendingReply(false);
     }
   };
 
@@ -248,81 +280,165 @@ export default function MailScreen() {
         animationType="slide"
         onRequestClose={() => setOpen(null)}
       >
-        <Pressable style={styles.backdrop} onPress={() => setOpen(null)} testID="mail-detail-backdrop" />
-        <View style={[styles.sheet, { paddingBottom: (insets.bottom || 0) + spacing.lg }]}>
-          {open ? (
-            <>
-              <View style={styles.sheetHandle} />
-              <View style={styles.sheetHeader}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.sheetTitle} numberOfLines={1}>
-                    {open.reporter_name || open.reporter_email || "Anonymous reply"}
-                  </Text>
-                  {open.reporter_email ? (
-                    <Text style={styles.sheetSub}>{open.reporter_email}</Text>
-                  ) : null}
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          style={{ flex: 1 }}
+        >
+          <Pressable style={styles.backdrop} onPress={() => setOpen(null)} testID="mail-detail-backdrop" />
+          <View style={[styles.sheet, { paddingBottom: (insets.bottom || 0) + spacing.lg }]}>
+            {open ? (
+              <>
+                <View style={styles.sheetHandle} />
+                <View style={styles.sheetHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.sheetTitle} numberOfLines={1}>
+                      {open.reporter_name || open.reporter_email || "Anonymous reply"}
+                    </Text>
+                    {open.reporter_email ? (
+                      <Text style={styles.sheetSub}>{open.reporter_email}</Text>
+                    ) : null}
+                  </View>
+                  <Pressable onPress={() => setOpen(null)} testID="mail-detail-close" hitSlop={10}>
+                    <Ionicons name="close" size={24} color={colors.onSurface} />
+                  </Pressable>
                 </View>
-                <Pressable onPress={() => setOpen(null)} testID="mail-detail-close" hitSlop={10}>
-                  <Ionicons name="close" size={24} color={colors.onSurface} />
-                </Pressable>
-              </View>
 
-              <View style={styles.jobCard}>
-                <View style={styles.jobCardRow}>
-                  <Text style={styles.jobCardLabel}>Replying to</Text>
-                  {open.project_flag ? (
-                    <View style={styles.flagChip}>
-                      <Ionicons name="flag" size={10} color={colors.error} />
-                      <Text style={styles.flagChipText}>{open.project_flag}</Text>
-                    </View>
-                  ) : null}
+                <View style={styles.jobCard}>
+                  <View style={styles.jobCardRow}>
+                    <Text style={styles.jobCardLabel}>Replying to</Text>
+                    {open.project_flag ? (
+                      <View style={styles.flagChip}>
+                        <Ionicons name="flag" size={10} color={colors.error} />
+                        <Text style={styles.flagChipText}>{open.project_flag}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  <Text style={styles.jobCardTitle}>{open.project_label || "General reply"}</Text>
+                  <Pressable onPress={() => openJob(open)} testID="mail-open-job" style={styles.linkRow}>
+                    <Ionicons name="document-text" size={14} color={colors.brandPrimary} />
+                    <Text style={styles.linkRowText}>Open full report</Text>
+                  </Pressable>
                 </View>
-                <Text style={styles.jobCardTitle}>{open.project_label || "General reply"}</Text>
-                <Pressable onPress={() => openJob(open)} testID="mail-open-job" style={styles.linkRow}>
-                  <Ionicons name="document-text" size={14} color={colors.brandPrimary} />
-                  <Text style={styles.linkRowText}>Open full report</Text>
-                </Pressable>
-              </View>
 
-              <ScrollView style={styles.messageBox}>
-                <Text style={styles.messageText}>{open.message}</Text>
-              </ScrollView>
+                <ScrollView style={styles.threadBox} contentContainerStyle={{ padding: spacing.md, gap: 10 }}>
+                  {loadingThread ? (
+                    <ActivityIndicator color={colors.brandPrimary} />
+                  ) : (
+                    thread.map((t) => {
+                      const outbound = t.direction === "outbound";
+                      return (
+                        <View
+                          key={t.id}
+                          style={[
+                            styles.bubble,
+                            outbound ? styles.bubbleOut : styles.bubbleIn,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.bubbleWho,
+                              outbound && { color: colors.onBrandPrimary, opacity: 0.9 },
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {outbound
+                              ? `${t.reporter_name || "You"} · reply`
+                              : t.reporter_name || t.reporter_email || "Anonymous"}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.bubbleText,
+                              outbound && { color: colors.onBrandPrimary },
+                            ]}
+                          >
+                            {t.message}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.bubbleWhen,
+                              outbound && { color: colors.onBrandPrimary, opacity: 0.75 },
+                            ]}
+                          >
+                            {formatWhen(t.created_at)}
+                            {outbound ? (t.email_delivered ? " · emailed" : " · no email on file") : ""}
+                          </Text>
+                        </View>
+                      );
+                    })
+                  )}
+                </ScrollView>
 
-              <Text style={styles.sheetWhen}>
-                Received {formatWhen(open.created_at)}
-              </Text>
-
-              <View style={styles.actionRow}>
-                <Pressable
-                  testID="mail-toggle-read"
-                  onPress={() => open && toggleRead(open)}
-                  style={styles.secondaryBtn}
-                >
-                  <Ionicons name={open.read_at ? "mail" : "mail-open"} size={14} color={colors.brandPrimary} />
-                  <Text style={styles.secondaryBtnText}>
-                    Mark {open.read_at ? "unread" : "read"}
+                {open.reporter_email ? null : (
+                  <Text style={styles.replyHint}>
+                    No email on file for this respondent — your reply is saved on the report but can't be emailed.
                   </Text>
-                </Pressable>
-                <Pressable
-                  testID="mail-archive"
-                  onPress={() => open && archive(open)}
-                  style={styles.secondaryBtn}
-                >
-                  <Ionicons name="archive" size={14} color={colors.brandPrimary} />
-                  <Text style={styles.secondaryBtnText}>Archive</Text>
-                </Pressable>
-                <Pressable
-                  testID="mail-delete"
-                  onPress={() => open && removeOne(open)}
-                  style={[styles.secondaryBtn, styles.dangerBtn]}
-                >
-                  <Ionicons name="trash" size={14} color={colors.error} />
-                  <Text style={[styles.secondaryBtnText, { color: colors.error }]}>Delete</Text>
-                </Pressable>
-              </View>
-            </>
-          ) : null}
-        </View>
+                )}
+
+                <View style={styles.replyRow}>
+                  <TextInput
+                    testID="mail-reply-input"
+                    value={replyText}
+                    onChangeText={setReplyText}
+                    placeholder={
+                      open.reporter_email
+                        ? `Reply to ${open.reporter_name || open.reporter_email}…`
+                        : "Add a note to the thread…"
+                    }
+                    placeholderTextColor={colors.muted}
+                    multiline
+                    style={styles.replyInput}
+                  />
+                  <Pressable
+                    testID="mail-reply-send"
+                    onPress={sendReply}
+                    disabled={sendingReply || !replyText.trim()}
+                    style={({ pressed }) => [
+                      styles.sendBtn,
+                      pressed && { opacity: 0.85 },
+                      (sendingReply || !replyText.trim()) && { opacity: 0.4 },
+                    ]}
+                  >
+                    {sendingReply ? (
+                      <ActivityIndicator size="small" color={colors.onBrandPrimary} />
+                    ) : (
+                      <Ionicons name="send" size={16} color={colors.onBrandPrimary} />
+                    )}
+                  </Pressable>
+                </View>
+                {replyError ? <Text style={styles.replyError}>{replyError}</Text> : null}
+
+                <View style={styles.actionRow}>
+                  <Pressable
+                    testID="mail-toggle-read"
+                    onPress={() => open && toggleRead(open)}
+                    style={styles.secondaryBtn}
+                  >
+                    <Ionicons name={open.read_at ? "mail" : "mail-open"} size={14} color={colors.brandPrimary} />
+                    <Text style={styles.secondaryBtnText}>
+                      Mark {open.read_at ? "unread" : "read"}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    testID="mail-archive"
+                    onPress={() => open && archive(open)}
+                    style={styles.secondaryBtn}
+                  >
+                    <Ionicons name="archive" size={14} color={colors.brandPrimary} />
+                    <Text style={styles.secondaryBtnText}>Archive</Text>
+                  </Pressable>
+                  <Pressable
+                    testID="mail-delete"
+                    onPress={() => open && removeOne(open)}
+                    style={[styles.secondaryBtn, styles.dangerBtn]}
+                  >
+                    <Ionicons name="trash" size={14} color={colors.error} />
+                    <Text style={[styles.secondaryBtnText, { color: colors.error }]}>Delete</Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : null}
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -501,6 +617,65 @@ const styles = StyleSheet.create({
     maxHeight: 260,
   },
   messageText: { color: colors.onSurface, fontSize: 14, lineHeight: 21 },
+  threadBox: {
+    maxHeight: 320,
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: spacing.sm,
+  },
+  bubble: {
+    padding: 10,
+    borderRadius: radius.md,
+    maxWidth: "92%",
+  },
+  bubbleIn: {
+    alignSelf: "flex-start",
+    backgroundColor: colors.surfaceTertiary,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  bubbleOut: {
+    alignSelf: "flex-end",
+    backgroundColor: colors.brandPrimary,
+  },
+  bubbleWho: { color: colors.onSurface, fontWeight: "700", fontSize: 12 },
+  bubbleText: { color: colors.onSurface, fontSize: 14, lineHeight: 20, marginTop: 2 },
+  bubbleWhen: { color: colors.muted, fontSize: 10, marginTop: 4 },
+  replyHint: {
+    color: colors.muted,
+    fontSize: 11,
+    marginBottom: 6,
+    fontStyle: "italic",
+  },
+  replyRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  replyInput: {
+    flex: 1,
+    backgroundColor: colors.surfaceSecondary,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+    color: colors.onSurface,
+    fontSize: 14,
+    maxHeight: 100,
+  },
+  sendBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: radius.pill,
+    backgroundColor: colors.brandPrimary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  replyError: { color: colors.error, fontSize: 12, marginBottom: 6 },
   sheetWhen: { color: colors.muted, fontSize: 11, marginTop: spacing.sm, marginBottom: spacing.md },
   actionRow: { flexDirection: "row", gap: spacing.sm, flexWrap: "wrap" },
   secondaryBtn: {

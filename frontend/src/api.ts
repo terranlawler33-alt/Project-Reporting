@@ -110,6 +110,24 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ summary }),
     }),
+  getResponseThread: (id: string) =>
+    apiRequest<any[]>(`/responses/${id}/thread`),
+  replyToResponse: (id: string, message: string) =>
+    apiRequest<any>(`/responses/${id}/reply`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    }),
+  getMailSchedule: () => apiRequest<any>("/digest/mail-schedule"),
+  setMailSchedule: (payload: { enabled: boolean; hour: number; minute: number }) =>
+    apiRequest<any>("/digest/mail-schedule", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  sendMailDigestNow: () =>
+    apiRequest<{ ok: boolean; emails_sent: number; owners: number; replies: number }>(
+      "/digest/mail-send-now",
+      { method: "POST" },
+    ),
   listCustomers: () => apiRequest<any[]>("/customers"),
   createCustomer: (payload: any) =>
     apiRequest<any>("/customers", { method: "POST", body: JSON.stringify(payload) }),

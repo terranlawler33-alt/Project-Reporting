@@ -41,6 +41,7 @@ export type Visit = {
   project_code?: string | null;
   notes?: string | null;
   ended_at?: string | null;
+  is_flagged?: boolean;
 };
 
 export type PaintOpsMapHandle = {
@@ -52,6 +53,13 @@ type Props = {
   selectedId?: string | null;
   onMarkerPress?: (v: Visit) => void;
 };
+
+function pinColorFor(v: Visit, selected: boolean): string {
+  if (selected) return colors.warning;
+  if (v.is_flagged) return colors.error;        // flagged → red
+  if (!v.ended_at) return "#F97316";             // in-progress → orange
+  return colors.success;                         // complete → green
+}
 
 // Small helper component that lives INSIDE the MapContainer so we can imperatively
 // pan/zoom via the parent's forwarded ref.
@@ -103,11 +111,7 @@ function MapCore({
       />
       {visits.map((v) => {
         const isSelected = v.id === selectedId;
-        const color = isSelected
-          ? colors.warning
-          : v.ended_at
-            ? colors.success
-            : colors.brandPrimary;
+        const color = pinColorFor(v, isSelected);
         return (
           <Marker
             key={v.id}

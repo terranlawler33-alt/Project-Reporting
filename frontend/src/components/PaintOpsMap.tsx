@@ -13,6 +13,7 @@ export type Visit = {
   project_code?: string | null;
   notes?: string | null;
   ended_at?: string | null;
+  is_flagged?: boolean;
 };
 
 export type PaintOpsMapHandle = {
@@ -24,6 +25,13 @@ type Props = {
   selectedId?: string | null;
   onMarkerPress?: (v: Visit) => void;
 };
+
+function pinColorFor(v: Visit, selected: boolean): string {
+  if (selected) return colors.warning;
+  if (v.is_flagged) return colors.error;         // flagged → red
+  if (!v.ended_at) return "#F97316";              // in-progress → orange
+  return colors.success;                          // complete → green
+}
 
 function MapCore({
   visits,
@@ -56,9 +64,7 @@ function MapCore({
             identifier={v.id}
             coordinate={{ latitude: v.latitude, longitude: v.longitude }}
             onPress={() => onMarkerPress?.(v)}
-            pinColor={
-              isSelected ? colors.warning : v.ended_at ? colors.success : colors.brandPrimary
-            }
+            pinColor={pinColorFor(v, isSelected)}
           >
             <Callout>
               <View style={styles.callout}>

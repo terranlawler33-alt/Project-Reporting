@@ -71,6 +71,13 @@ export default function ProfileScreen() {
               subtitle="AI-roll up last 7 days & email the owner"
               onPress={() => router.push("/admin/digest")}
             />
+            <Row
+              testID="admin-mail-digest-nav"
+              icon="mail"
+              title="Daily Mail Digest"
+              subtitle="Morning email of unread replies grouped by job"
+              onPress={() => router.push("/admin/mail-digest")}
+            />
           </Section>
         )}
 

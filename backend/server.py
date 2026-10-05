@@ -252,7 +252,8 @@ class DailyReport(BaseModel):
 
 
 class ReportResponse(BaseModel):
-    """A reply left on a shared report (typically on a flagged job) by an external recipient."""
+    """A reply left on a shared report (typically on a flagged job) by an external recipient,
+    OR an owner-side reply back out to the original respondent (direction='outbound')."""
     id: str
     report_id: str
     report_user_id: str  # owner of the report (destination inbox)
@@ -265,6 +266,11 @@ class ReportResponse(BaseModel):
     created_at: str
     read_at: Optional[str] = None
     archived: bool = False
+    # Threading
+    parent_id: Optional[str] = None  # null for original reply; id of the parent for owner's replies
+    direction: str = "inbound"  # "inbound" = from recipient; "outbound" = owner's reply
+    author_user_id: Optional[str] = None  # set when owner sends a reply from the app
+    email_delivered: bool = False  # true when owner's outbound reply was emailed to the respondent
 
 
 # ---------- Auth helpers ----------
@@ -443,6 +449,10 @@ async def lifespan(app: FastAPI):
         await _reschedule_digest(app)
     except Exception as e:
         logger.error(f"Scheduler bootstrap failed: {e}")
+    try:
+        await _reschedule_mail_digest(app)
+    except Exception as e:
+        logger.error(f"Mail digest scheduler bootstrap failed: {e}")
 
     yield
 
@@ -2597,6 +2607,7 @@ async def list_responses(
     user: dict = Depends(current_user),
     include_archived: bool = False,
     unread_only: bool = False,
+    include_outbound: bool = False,
 ):
     FULL_ROLES = {Role.OWNER.value, Role.OPERATIONS.value, Role.PROJECT_MANAGER.value}
     if user["role"] in FULL_ROLES or user.get("is_admin"):
@@ -2607,6 +2618,9 @@ async def list_responses(
         query["archived"] = {"$ne": True}
     if unread_only:
         query["read_at"] = None
+    if not include_outbound:
+        # Hide owner's own outbound replies from the inbox list
+        query["direction"] = {"$ne": "outbound"}
     docs = await request.app.db.report_responses.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
     return [ReportResponse(**d) for d in docs]
 
@@ -2620,6 +2634,7 @@ async def unread_response_count(request: Request, user: dict = Depends(current_u
         query = {"report_user_id": user["id"]}
     query["archived"] = {"$ne": True}
     query["read_at"] = None
+    query["direction"] = {"$ne": "outbound"}
     count = await request.app.db.report_responses.count_documents(query)
     return {"count": count}
 
@@ -2669,6 +2684,123 @@ async def archive_response(response_id: str, request: Request, user: dict = Depe
         {"id": response_id}, {"$set": {"archived": True}},
     )
     doc = await request.app.db.report_responses.find_one({"id": response_id}, {"_id": 0})
+    return ReportResponse(**doc)
+
+
+class OwnerReply(BaseModel):
+    message: str = Field(min_length=1, max_length=5000)
+
+
+@api.get("/responses/{response_id}/thread", response_model=List[ReportResponse])
+async def get_response_thread(response_id: str, request: Request, user: dict = Depends(current_user)):
+    """Return the full thread for a response: parent (root inbound reply) + all owner follow-ups,
+    sorted oldest → newest."""
+    root = await _response_owner_check(request, response_id, user)
+    root_id = root.get("parent_id") or root["id"]
+    docs = await request.app.db.report_responses.find(
+        {"$or": [{"id": root_id}, {"parent_id": root_id}]}, {"_id": 0},
+    ).sort("created_at", 1).to_list(500)
+    return [ReportResponse(**d) for d in docs]
+
+
+@api.post("/responses/{response_id}/reply", response_model=ReportResponse)
+async def reply_to_response(
+    response_id: str, data: OwnerReply, request: Request, user: dict = Depends(current_user),
+):
+    """Owner-side reply back to the original respondent.
+
+    - Verifies the current user owns the response (or is in a privileged role).
+    - Creates a new ReportResponse with direction='outbound', parent_id=root, author_user_id=user.id.
+    - If the original respondent left an email, sends them the reply as a plain email.
+    """
+    root = await _response_owner_check(request, response_id, user)
+    root_id = root.get("parent_id") or root["id"]
+    parent = root
+    if root.get("parent_id"):
+        parent = await request.app.db.report_responses.find_one({"id": root_id}, {"_id": 0}) or root
+
+    report = await request.app.db.reports.find_one({"id": root["report_id"]}, {"_id": 0})
+    now_iso = datetime.now(timezone.utc).isoformat()
+    author_name = user.get("name") or "Field team"
+    recipient_email = parent.get("reporter_email")
+
+    doc = {
+        "id": str(uuid4()),
+        "report_id": root["report_id"],
+        "report_user_id": root["report_user_id"],
+        "project_id": parent.get("project_id"),
+        "project_label": parent.get("project_label"),
+        "project_flag": parent.get("project_flag"),
+        "reporter_name": author_name,
+        "reporter_email": None,
+        "message": data.message.strip(),
+        "created_at": now_iso,
+        "read_at": now_iso,  # own replies are implicitly read
+        "archived": False,
+        "parent_id": root_id,
+        "direction": "outbound",
+        "author_user_id": user["id"],
+        "email_delivered": False,
+    }
+
+    delivered = False
+    if recipient_email:
+        try:
+            report_date = (report or {}).get("report_date") or ""
+            job_line = (
+                f'<p style="color:#374151;margin:0 0 8px 0">Job: <b>{escape(parent.get("project_label") or "General")}</b></p>'
+                if parent.get("project_label") else ""
+            )
+            portal_token = (report or {}).get("public_token")
+            portal_line = ""
+            if portal_token:
+                base = (os.getenv("EXPO_PUBLIC_BACKEND_URL") or os.getenv("BACKEND_PUBLIC_URL") or "").rstrip("/")
+                if not base:
+                    # fall back to Request's base URL
+                    base = str(request.base_url).rstrip("/")
+                portal_line = (
+                    f'<p style="font-size:12px;color:#6B7280;margin-top:16px">'
+                    f'View the full report: <a href="{base}/api/public/reports/{portal_token}">open report →</a>'
+                    f'</p>'
+                )
+            prev_block = ""
+            if parent.get("message"):
+                prev_block = (
+                    f'<div style="margin-top:16px;padding-top:12px;border-top:1px solid #E5E7EB;color:#6B7280;font-size:12px">'
+                    f'<div style="margin-bottom:6px">On {escape(parent.get("created_at", "")[:10])}, you wrote:</div>'
+                    f'<div style="padding:10px;background:#F3F4F6;border-radius:6px;color:#374151;line-height:1.55">'
+                    f'{escape(parent["message"]).replace(chr(10), "<br>")}'
+                    f'</div></div>'
+                )
+            subject = f"Reply from {author_name} — Daily Report {report_date}".strip()
+            html_body = (
+                f'<table role="presentation" width="100%" style="font-family:Arial,sans-serif">'
+                f'<tr><td style="padding:24px">'
+                f'<h2 style="margin:0 0 10px 0;color:#111827">{escape(author_name)} replied</h2>'
+                f'{job_line}'
+                f'<div style="background:#FFF7ED;border-left:3px solid #F97316;border-radius:6px;'
+                f'padding:14px;color:#111827;line-height:1.6">'
+                f'{escape(doc["message"]).replace(chr(10), "<br>")}'
+                f'</div>'
+                f'{portal_line}'
+                f'{prev_block}'
+                f'</td></tr></table>'
+            )
+            eid = await send_email(to=recipient_email, subject=subject, html=html_body)
+            delivered = bool(eid)
+        except Exception as e:
+            logger.warning(f"Owner reply email failed: {e}")
+
+    doc["email_delivered"] = delivered
+    await request.app.db.report_responses.insert_one(doc.copy())
+    doc.pop("_id", None)
+
+    # Mark the parent as read if it wasn't already
+    if parent and not parent.get("read_at"):
+        await request.app.db.report_responses.update_one(
+            {"id": parent["id"]}, {"$set": {"read_at": now_iso}},
+        )
+
     return ReportResponse(**doc)
 
 
@@ -2986,6 +3118,170 @@ async def _reschedule_digest(app: FastAPI):
             minute=schedule.get("minute", 0),
         )
         scheduler.add_job(_run_scheduled_digest, trigger, args=[app], id="weekly-digest", replace_existing=True)
+
+
+# ---------- Daily Mail Digest ----------
+# Singleton schedule — each morning, every user who owns reports with unread, non-archived
+# inbound replies from the last 24h gets a single email listing those replies grouped by job.
+class MailDigestScheduleCreate(BaseModel):
+    enabled: bool
+    hour: int = Field(ge=0, le=23, default=7)
+    minute: int = Field(ge=0, le=59, default=0)
+
+
+@api.get("/digest/mail-schedule")
+async def get_mail_schedule(request: Request, _: dict = Depends(admin_only)):
+    doc = await request.app.db.mail_digest_schedule.find_one({"id": "singleton"}, {"_id": 0})
+    return doc or {"enabled": False, "hour": 7, "minute": 0}
+
+
+@api.put("/digest/mail-schedule")
+async def set_mail_schedule(
+    data: MailDigestScheduleCreate, request: Request, admin: dict = Depends(admin_only),
+):
+    doc = {
+        "id": "singleton",
+        "enabled": data.enabled,
+        "hour": data.hour,
+        "minute": data.minute,
+        "updated_by": admin["id"],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await request.app.db.mail_digest_schedule.update_one(
+        {"id": "singleton"}, {"$set": doc}, upsert=True,
+    )
+    await _reschedule_mail_digest(request.app)
+    return {"ok": True, "schedule": doc}
+
+
+@api.post("/digest/mail-send-now")
+async def send_mail_digest_now(request: Request, _: dict = Depends(admin_only)):
+    """Trigger the daily mail digest run immediately (admin test action)."""
+    result = await _run_mail_digest(request.app)
+    return {"ok": True, **result}
+
+
+async def _run_mail_digest(app: FastAPI) -> dict:
+    """For each report-owning user with unread inbound replies in the last 24h, send a single
+    digest email grouped by report → job. Returns a small summary dict."""
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    unread = await app.db.report_responses.find(
+        {
+            "direction": {"$ne": "outbound"},
+            "archived": {"$ne": True},
+            "read_at": None,
+            "created_at": {"$gte": since},
+        },
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(2000)
+    if not unread:
+        return {"emails_sent": 0, "owners": 0, "replies": 0}
+
+    # Group by report_user_id → report_id → list of replies
+    by_user: dict = {}
+    for r in unread:
+        by_user.setdefault(r["report_user_id"], {}).setdefault(r["report_id"], []).append(r)
+
+    sent_count = 0
+    owner_count = 0
+    for user_id, by_report in by_user.items():
+        user = await app.db.users.find_one({"id": user_id}, {"_id": 0})
+        if not user or not user.get("email"):
+            continue
+        owner_count += 1
+
+        # Build email body
+        total_replies = sum(len(v) for v in by_report.values())
+        rows_html = []
+        for report_id, reps in by_report.items():
+            report = await app.db.reports.find_one({"id": report_id}, {"_id": 0}) or {}
+            report_label = (
+                report.get("project_name")
+                or report.get("project_code")
+                or report.get("report_date")
+                or "Daily report"
+            )
+            # Group by project_id within report
+            by_project: dict = {}
+            for rp in reps:
+                by_project.setdefault(rp.get("project_id") or "__general__", []).append(rp)
+            section_rows = []
+            for pid, prs in by_project.items():
+                plabel = prs[0].get("project_label") or "General reply"
+                flag = prs[0].get("project_flag")
+                flag_html = (
+                    f'<span style="display:inline-block;padding:2px 8px;background:#FEE2E2;color:#B91C1C;'
+                    f'border-radius:999px;font-size:11px;font-weight:700;margin-left:6px">{escape(flag)}</span>'
+                    if flag else ""
+                )
+                reply_items = []
+                for rp in prs:
+                    who = escape(rp.get("reporter_name") or rp.get("reporter_email") or "Anonymous")
+                    when = (rp.get("created_at") or "")[11:16]
+                    body = escape(rp.get("message") or "")
+                    reply_items.append(
+                        f'<div style="padding:10px 12px;background:#F3F4F6;border-radius:8px;margin-bottom:6px;line-height:1.55">'
+                        f'<div style="font-weight:700;color:#111827;font-size:13px">{who} <span style="color:#6B7280;font-weight:400">· {when}</span></div>'
+                        f'<div style="color:#374151;font-size:13px;margin-top:4px">{body}</div>'
+                        f'</div>'
+                    )
+                section_rows.append(
+                    f'<div style="margin:14px 0 8px 0">'
+                    f'<div style="font-weight:700;color:#111827;font-size:14px">{escape(plabel)}{flag_html}</div>'
+                    f'</div>'
+                    + "".join(reply_items)
+                )
+            rows_html.append(
+                f'<div style="margin:20px 0 0 0;padding-top:14px;border-top:1px solid #E5E7EB">'
+                f'<div style="color:#6B7280;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;font-weight:700">Report</div>'
+                f'<div style="color:#111827;font-weight:800;font-size:15px;margin-top:2px">{escape(str(report_label))}</div>'
+                + "".join(section_rows)
+                + "</div>"
+            )
+        subject = f"Your morning digest — {total_replies} unread repl{'ies' if total_replies != 1 else 'y'}"
+        html_body = (
+            f'<table role="presentation" width="100%" style="font-family:Arial,sans-serif;background:#F9FAFB">'
+            f'<tr><td style="padding:24px">'
+            f'<h2 style="margin:0 0 6px 0;color:#111827">Good morning</h2>'
+            f'<p style="color:#374151;margin:0 0 4px 0">You have <b>{total_replies}</b> unread repl{"ies" if total_replies != 1 else "y"} across {len(by_report)} report{"s" if len(by_report) != 1 else ""} from the last 24 hours.</p>'
+            + "".join(rows_html)
+            + f'<p style="font-size:12px;color:#6B7280;margin-top:20px">Open Summar-Eeze → Mail to reply or archive.</p>'
+            f'</td></tr></table>'
+        )
+        try:
+            eid = await send_email(to=user["email"], subject=subject, html=html_body)
+            if eid:
+                sent_count += 1
+        except Exception as e:
+            logger.warning(f"Mail digest to {user.get('email')} failed: {e}")
+
+    await app.db.mail_digest_runs.insert_one({
+        "id": str(uuid4()),
+        "run_at": datetime.now(timezone.utc).isoformat(),
+        "emails_sent": sent_count,
+        "owners": owner_count,
+        "replies": sum(len(v) for v in [reps for by_report in by_user.values() for reps in by_report.values()]),
+    })
+
+    return {
+        "emails_sent": sent_count,
+        "owners": owner_count,
+        "replies": sum(len(v) for v in [reps for by_report in by_user.values() for reps in by_report.values()]),
+    }
+
+
+async def _reschedule_mail_digest(app: FastAPI):
+    schedule = await app.db.mail_digest_schedule.find_one({"id": "singleton"}, {"_id": 0})
+    scheduler: AsyncIOScheduler = app.scheduler
+    try:
+        scheduler.remove_job("mail-digest-daily")
+    except Exception:
+        pass
+    if schedule and schedule.get("enabled"):
+        trigger = CronTrigger(hour=schedule.get("hour", 7), minute=schedule.get("minute", 0))
+        scheduler.add_job(
+            _run_mail_digest, trigger, args=[app], id="mail-digest-daily", replace_existing=True,
+        )
 
 
 # Include the router (with the new routes) — must be after all routes are defined

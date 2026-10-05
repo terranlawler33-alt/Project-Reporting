@@ -205,8 +205,8 @@ frontend:
 
 metadata:
   created_by: "main_agent"
-  version: "1.7"
-  test_sequence: 21
+  version: "1.8"
+  test_sequence: 22
   run_ui: false
 
 test_plan:
@@ -218,15 +218,17 @@ test_plan:
 agent_communication:
     - agent: "main"
       message: |
-        Iteration 21 — Mail / Responses + Project Summary + public HTML portal: COMPLETE.
-        - Backend: 27/27 pytest cases passed. New endpoints: public HTML portal, public respond,
-          /responses CRUD + unread-count, per-project summary PATCH. Project.summary field added
-          to ProjectEntry model.
-        - Frontend: Mail tab added with unread badge (polls every 20s), inbox list with reply detail
-          modal (Mark read/unread + Archive + Delete). Report detail now renders a "JOBS ON THIS
-          REPORT" card with per-project summary (inline edit) and attached replies thread. Map pins
-          and visit detail modal show job overview chip + flag chip when visit.project_id matches
-          a project with a summary. FAB label reverted to "New Report" (draft logic preserved).
-        - Public portal HTML includes per-flagged-job "Respond to this job →" button and a general
-          reply button. Full round-trip verified via screenshots: public submit → Mail inbox badge
-          flips red → open detail → marked read.
+        Iteration 22 — Reply threads + Daily Mail Digest + outbound inbox filter: COMPLETE.
+        - Backend: 27/27 pytest cases passed. ReportResponse model gained parent_id, direction,
+          author_user_id, email_delivered. New endpoints: POST /responses/{id}/reply (owner reply with
+          email send + parent mark-read + outbound-child-resolves-to-root), GET /responses/{id}/thread,
+          GET+PUT /digest/mail-schedule, POST /digest/mail-send-now (admin only, APScheduler cron
+          job registered on lifespan). list_responses + unread-count now exclude direction=outbound by default.
+        - Frontend: Mail detail now renders the full thread as alternating bubbles (grey inbound /
+          orange outbound), inline reply box with Send button, delivery indicator ("emailed" vs
+          "no email on file"). Map pins recolored by status (red flagged / orange in-progress /
+          green complete) across native markers, web leaflet markers, and sidebar visit cards;
+          legend updated to 3-color key. New admin screen /admin/mail-digest with Enable toggle,
+          12-hour AM/PM picker, Save + "Send now (test)" buttons.
+        - Full round-trip verified via screenshot: Jane's inbound reply → owner types + sends →
+          outbound bubble appears → thread persisted → parent marked read.

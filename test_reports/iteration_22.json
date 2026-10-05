@@ -1,0 +1,35 @@
+{
+  "summary": "Iteration 22 backend testing (Reply Threads + Daily Mail Digest + outbound inbox filter). Created pytest suite with 27 tests covering: (1) POST /api/responses/{id}/reply — field shape, parent-read marking, missing-email path, child-to-root resolution, 404/422/403; (2) GET /api/responses/{id}/thread — parent+children sort ASC, child-to-root, 404/403; (3) inbox filter — list_responses default excludes outbound, include_outbound=true opts in, unread-count never counts outbound even when unread; (4) GET /api/digest/mail-schedule — defaults + 403; (5) PUT /api/digest/mail-schedule — persistence, hour=24 → 422, minute=60 → 422, non-admin → 403; (6) POST /api/digest/mail-send-now — zeros when empty, >=1 owner/replies when inbound unread exists, 403 for non-admin; (7) Regression — drafts GET today/PUT/DELETE, public HTML portal + respond, project summary PATCH, response read/unread/archive/delete. All 27/27 passed on run against public EXPO_PUBLIC_BACKEND_URL.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration22_reply_threads_mail_digest.py",
+    "/app/test_reports/pytest/pytest_iteration22.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 3288 lines — exceeds the 700-line threshold flagged in code-review guidelines. Consider splitting the Mail/Responses/Digest routers into their own modules (e.g. routers/responses.py, routers/digest.py) and keeping server.py as the app factory + lifespan only.",
+    "_run_mail_digest computes the 'replies' total three times via nested comprehensions over by_user — minor DRY nit; precompute once before the owner loop.",
+    "In reply_to_response, when the inbound reply has a reporter_email but Resend fails/returns no id, email_delivered is correctly set to False and the response still saves — good. No change needed, but worth noting Resend failures are only logged at WARNING without surfacing to the client (by design)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration22_reply_threads_mail_digest.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (27/27)",
+    "frontend": "not tested (backend-only review request)"
+  },
+  "seed_data_creation": "Each test creates its own report + inbound reply via POST /api/reports + /api/public/reports/{token}/respond, prefixed with TEST_IT22_. Autouse fixture deletes all admin-visible responses (including outbound and archived) after each test and resets the mail_digest_schedule singleton to {enabled:false, hour:7, minute:0} so runs are idempotent.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run serially with `pytest /app/backend/tests/test_iteration22_reply_threads_mail_digest.py -v -o addopts=\"\"`. The suite shares the admin session fixture (session scope) and the autouse teardown wipes responses + resets mail_digest_schedule. If you add more tests on the same singleton, be careful not to assume a stale state — always re-PUT or re-GET first. The Labor test user is created once per session via /api/admin/users (ignored if 409) and deleted on session teardown. The with-unread digest test tolerates emails_sent in [0, owners] since Resend may silently reject the admin email in the preview env; only the DB-side counters (owners/replies) are hard-asserted.",
+  "rca_of_issue": "N/A — all tests passed. One self-inflicted test bug was found and fixed during the first run: I had used GET /api/reports/draft (returns 404) instead of /api/reports/draft/today for the regression draft GET. Fixed and re-run clean."
+}

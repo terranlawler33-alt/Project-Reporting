@@ -447,17 +447,24 @@ export default function MapScreen() {
 
       <View style={styles.mapWrap} testID="live-map-container">
         <PaintOpsMap
-          visits={visits}
+          visits={visits.map((v: any) => ({
+            ...v,
+            is_flagged: !!(v.project_id && jobSummaries[v.project_id]?.flag),
+          }))}
           onMarkerPress={(v) => setSelectedVisit(v)}
         />
         <View style={styles.mapLegend}>
           <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: colors.brandPrimary }]} />
-            <Text style={styles.legendText}>Active</Text>
+            <View style={[styles.legendDot, { backgroundColor: colors.error }]} />
+            <Text style={styles.legendText}>Flagged</Text>
+          </View>
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: "#F97316" }]} />
+            <Text style={styles.legendText}>In progress</Text>
           </View>
           <View style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: colors.success }]} />
-            <Text style={styles.legendText}>Completed</Text>
+            <Text style={styles.legendText}>Complete</Text>
           </View>
         </View>
       </View>
@@ -672,9 +679,19 @@ export default function MapScreen() {
                 pressed && { opacity: 0.75 },
               ]}
             >
-              <View style={[styles.pin, v.ended_at && { backgroundColor: colors.success }]}>
-                <Ionicons name="location" size={18} color={colors.onBrandPrimary} />
-              </View>
+              {(() => {
+                const flagged = v.project_id && jobSummaries[v.project_id]?.flag;
+                const pinColor = flagged
+                  ? colors.error
+                  : v.ended_at
+                  ? colors.success
+                  : "#F97316";
+                return (
+                  <View style={[styles.pin, { backgroundColor: pinColor }]}>
+                    <Ionicons name="location" size={18} color={colors.onBrandPrimary} />
+                  </View>
+                );
+              })()}
               <View style={{ flex: 1 }}>
                 <View style={styles.visitTitleRow}>
                   <Text style={styles.visitTitle} numberOfLines={1}>
