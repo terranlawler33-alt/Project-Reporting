@@ -205,12 +205,14 @@ frontend:
 
 metadata:
   created_by: "main_agent"
-  version: "1.8"
-  test_sequence: 22
+  version: "1.9"
+  test_sequence: 23
   run_ui: false
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "Reply photo upload — POST /api/responses/upload-photo"
+    - "OwnerReply with photos — reply persists photos + email embeds base64 images"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -218,17 +220,36 @@ test_plan:
 agent_communication:
     - agent: "main"
       message: |
-        Iteration 22 — Reply threads + Daily Mail Digest + outbound inbox filter: COMPLETE.
-        - Backend: 27/27 pytest cases passed. ReportResponse model gained parent_id, direction,
-          author_user_id, email_delivered. New endpoints: POST /responses/{id}/reply (owner reply with
-          email send + parent mark-read + outbound-child-resolves-to-root), GET /responses/{id}/thread,
-          GET+PUT /digest/mail-schedule, POST /digest/mail-send-now (admin only, APScheduler cron
-          job registered on lifespan). list_responses + unread-count now exclude direction=outbound by default.
-        - Frontend: Mail detail now renders the full thread as alternating bubbles (grey inbound /
-          orange outbound), inline reply box with Send button, delivery indicator ("emailed" vs
-          "no email on file"). Map pins recolored by status (red flagged / orange in-progress /
-          green complete) across native markers, web leaflet markers, and sidebar visit cards;
-          legend updated to 3-color key. New admin screen /admin/mail-digest with Enable toggle,
-          12-hour AM/PM picker, Save + "Send now (test)" buttons.
-        - Full round-trip verified via screenshot: Jane's inbound reply → owner types + sends →
-          outbound bubble appears → thread persisted → parent marked read.
+        Iteration 23 — Attach photos to owner reply.
+
+        Backend focus (test ONLY backend):
+
+        1. **POST /api/responses/upload-photo** (auth):
+           - multipart/form-data with `photo` file field.
+           - Returns `{ok: true, path: "<app>/replies/<user_id>/<uuid>.<ext>"}`.
+           - 400 for empty payload, 413 for > 8MB.
+           - 401 without auth.
+
+        2. **POST /api/responses/{id}/reply** now accepts `photos: List[str]` in body (max 4).
+           - Response ReportResponse.photos equals the posted list.
+           - When `photos` provided + `parent.reporter_email` present:
+             the resolved photos are base64-embedded as `<img>` tags in the email HTML
+             (verifiable by inspecting the stored response's email_delivered flag — if Resend
+             accepted the payload, delivered=true).
+           - When photos is empty — behavior unchanged from iteration 22.
+           - Validation: 422 if photos list > 4 items.
+
+        3. **ReportResponse model** regression: id/report_id/direction/parent_id/photos all serialize
+           in GET /responses, GET /responses/{id}/thread.
+
+        4. Regression: iterations 20/21/22 endpoints unchanged.
+           - Drafts work, public respond works, project summary PATCH works, response read/unread/archive/delete work,
+           - Thread fetch includes outbound replies with photos array in each item.
+
+        Credentials: admin@paintops.com / Admin@12345.
+
+        Files touched: /app/backend/server.py
+        - ReportResponse model: new `photos: List[str] = []` field.
+        - OwnerReply payload: `photos: List[str] = Field(default_factory=list, max_length=4)`.
+        - New endpoint upload_response_photo (reuses _put_object, "replies/<user_id>/" prefix).
+        - reply_to_response resolves photos via _get_object + inlines them in email HTML as data URLs.

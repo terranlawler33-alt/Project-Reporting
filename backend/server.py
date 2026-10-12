@@ -271,6 +271,7 @@ class ReportResponse(BaseModel):
     direction: str = "inbound"  # "inbound" = from recipient; "outbound" = owner's reply
     author_user_id: Optional[str] = None  # set when owner sends a reply from the app
     email_delivered: bool = False  # true when owner's outbound reply was emailed to the respondent
+    photos: List[str] = []  # object-storage paths of attachments on this reply
 
 
 # ---------- Auth helpers ----------
@@ -2689,6 +2690,32 @@ async def archive_response(response_id: str, request: Request, user: dict = Depe
 
 class OwnerReply(BaseModel):
     message: str = Field(min_length=1, max_length=5000)
+    photos: List[str] = Field(default_factory=list, max_length=4)
+
+
+@api.post("/responses/upload-photo")
+async def upload_response_photo(
+    request: Request,
+    photo: UploadFile = File(...),
+    user: dict = Depends(current_user),
+):
+    """Upload a single photo for an outbound reply. Returns an object-storage path the client
+    then passes in POST /api/responses/{id}/reply as part of `photos`."""
+    data = await photo.read()
+    if len(data) == 0:
+        raise HTTPException(400, "Empty photo")
+    if len(data) > 8 * 1024 * 1024:
+        raise HTTPException(413, "Photo must be <= 8 MB")
+    ext = "jpg"
+    if photo.filename and "." in photo.filename:
+        ext = photo.filename.rsplit(".", 1)[-1].lower()
+    if ext not in ("jpg", "jpeg", "png", "webp", "heic"):
+        ext = "jpg"
+    obj_path = f"{APP_NAME}/replies/{user['id']}/{uuid4()}.{ext}"
+    result = await run_in_threadpool(_put_object, obj_path, data, photo.content_type or f"image/{ext}")
+    if not result:
+        raise HTTPException(502, "Photo upload failed")
+    return {"ok": True, "path": obj_path}
 
 
 @api.get("/responses/{response_id}/thread", response_model=List[ReportResponse])
@@ -2741,7 +2768,33 @@ async def reply_to_response(
         "direction": "outbound",
         "author_user_id": user["id"],
         "email_delivered": False,
+        "photos": data.photos or [],
     }
+
+    # Resolve attachment images once (so we only hit storage per unique path)
+    attachment_imgs_html = ""
+    if doc["photos"]:
+        imgs = []
+        for p in doc["photos"][:4]:
+            try:
+                fetched = await run_in_threadpool(_get_object, p)
+                if not fetched:
+                    continue
+                content, content_type = fetched
+                b64 = _b64.b64encode(content).decode()
+                imgs.append(
+                    f'<img src="data:{content_type};base64,{b64}" '
+                    f'style="max-width:260px;max-height:260px;border-radius:8px;'
+                    f'margin:6px 6px 0 0;border:1px solid #E5E7EB;object-fit:cover" />'
+                )
+            except Exception as e:
+                logger.warning(f"Reply attachment embed failed for {p}: {e}")
+        if imgs:
+            attachment_imgs_html = (
+                '<div style="margin-top:12px;display:flex;flex-wrap:wrap">'
+                + "".join(imgs)
+                + "</div>"
+            )
 
     delivered = False
     if recipient_email:
@@ -2782,6 +2835,7 @@ async def reply_to_response(
                 f'padding:14px;color:#111827;line-height:1.6">'
                 f'{escape(doc["message"]).replace(chr(10), "<br>")}'
                 f'</div>'
+                f'{attachment_imgs_html}'
                 f'{portal_line}'
                 f'{prev_block}'
                 f'</td></tr></table>'

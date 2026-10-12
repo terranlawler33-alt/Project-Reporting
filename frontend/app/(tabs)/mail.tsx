@@ -15,8 +15,11 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Ionicons from "@react-native-vector-icons/ionicons";
+import { Image } from "expo-image";
+import * as ImagePicker from "expo-image-picker";
 import { useRouter, useFocusEffect } from "expo-router";
 import { api } from "@/src/api";
+import { uploadReplyPhoto, authedPhotoUrl } from "@/src/photos";
 import { colors, spacing, radius } from "@/src/theme";
 
 type Resp = {
@@ -31,6 +34,9 @@ type Resp = {
   created_at: string;
   read_at?: string | null;
   archived?: boolean;
+  direction?: string;
+  photos?: string[];
+  email_delivered?: boolean;
 };
 
 const formatWhen = (iso: string) => {
@@ -63,6 +69,8 @@ export default function MailScreen() {
   const [replyText, setReplyText] = useState("");
   const [sendingReply, setSendingReply] = useState(false);
   const [replyError, setReplyError] = useState<string | null>(null);
+  const [stagedPhotos, setStagedPhotos] = useState<string[]>([]); // local URIs
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -89,6 +97,7 @@ export default function MailScreen() {
     setOpen(r);
     setReplyText("");
     setReplyError(null);
+    setStagedPhotos([]);
     setLoadingThread(true);
     setThread([r]);
     try {
@@ -104,14 +113,58 @@ export default function MailScreen() {
     }
   };
 
+  const pickReplyPhoto = async () => {
+    if (stagedPhotos.length >= 4) {
+      setReplyError("Max 4 photos per reply.");
+      return;
+    }
+    setReplyError(null);
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        setReplyError("Photo library permission is required.");
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsMultipleSelection: false,
+        quality: 0.7,
+      });
+      if (!res.canceled && res.assets?.[0]?.uri) {
+        setStagedPhotos((prev) => [...prev, res.assets[0].uri].slice(0, 4));
+      }
+    } catch (e: any) {
+      setReplyError(e?.message || "Could not pick photo");
+    }
+  };
+
+  const removeStagedPhoto = (uri: string) =>
+    setStagedPhotos((prev) => prev.filter((u) => u !== uri));
+
   const sendReply = async () => {
-    if (!open || !replyText.trim()) return;
+    if (!open || (!replyText.trim() && stagedPhotos.length === 0)) return;
     setSendingReply(true);
     setReplyError(null);
     try {
-      const created = await api.replyToResponse(open.id, replyText.trim());
+      // Upload any staged photos first
+      let uploadedPaths: string[] = [];
+      if (stagedPhotos.length > 0) {
+        setUploadingPhoto(true);
+        for (const uri of stagedPhotos) {
+          try {
+            const path = await uploadReplyPhoto(uri);
+            uploadedPaths.push(path);
+          } catch (e: any) {
+            console.warn("Reply photo upload failed", e);
+          }
+        }
+        setUploadingPhoto(false);
+      }
+      const msg = replyText.trim() || "(photo attached)";
+      const created = await api.replyToResponse(open.id, msg, uploadedPaths);
       setThread((prev) => [...prev, created]);
       setReplyText("");
+      setStagedPhotos([]);
     } catch (e: any) {
       setReplyError(e?.message || "Failed to send reply");
     } finally {
@@ -353,6 +406,13 @@ export default function MailScreen() {
                           >
                             {t.message}
                           </Text>
+                          {t.photos && t.photos.length > 0 ? (
+                            <View style={styles.bubblePhotoRow}>
+                              {t.photos.map((p) => (
+                                <ReplyThumb key={p} path={p} />
+                              ))}
+                            </View>
+                          ) : null}
                           <Text
                             style={[
                               styles.bubbleWhen,
@@ -374,7 +434,42 @@ export default function MailScreen() {
                   </Text>
                 )}
 
+                {stagedPhotos.length > 0 ? (
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    style={styles.stagedRow}
+                    contentContainerStyle={{ gap: 8 }}
+                  >
+                    {stagedPhotos.map((uri) => (
+                      <View key={uri} style={styles.stagedThumb}>
+                        <Image source={{ uri }} style={styles.stagedThumbImg} contentFit="cover" />
+                        <Pressable
+                          testID={`staged-photo-remove-${uri.slice(-6)}`}
+                          onPress={() => removeStagedPhoto(uri)}
+                          style={styles.stagedThumbX}
+                          hitSlop={8}
+                        >
+                          <Ionicons name="close" size={12} color="#fff" />
+                        </Pressable>
+                      </View>
+                    ))}
+                  </ScrollView>
+                ) : null}
+
                 <View style={styles.replyRow}>
+                  <Pressable
+                    testID="mail-reply-pick-photo"
+                    onPress={pickReplyPhoto}
+                    disabled={uploadingPhoto || sendingReply || stagedPhotos.length >= 4}
+                    style={({ pressed }) => [
+                      styles.attachBtn,
+                      pressed && { opacity: 0.85 },
+                      (uploadingPhoto || sendingReply || stagedPhotos.length >= 4) && { opacity: 0.5 },
+                    ]}
+                  >
+                    <Ionicons name="camera" size={18} color={colors.brandPrimary} />
+                  </Pressable>
                   <TextInput
                     testID="mail-reply-input"
                     value={replyText}
@@ -391,14 +486,14 @@ export default function MailScreen() {
                   <Pressable
                     testID="mail-reply-send"
                     onPress={sendReply}
-                    disabled={sendingReply || !replyText.trim()}
+                    disabled={sendingReply || uploadingPhoto || (!replyText.trim() && stagedPhotos.length === 0)}
                     style={({ pressed }) => [
                       styles.sendBtn,
                       pressed && { opacity: 0.85 },
-                      (sendingReply || !replyText.trim()) && { opacity: 0.4 },
+                      (sendingReply || uploadingPhoto || (!replyText.trim() && stagedPhotos.length === 0)) && { opacity: 0.4 },
                     ]}
                   >
-                    {sendingReply ? (
+                    {sendingReply || uploadingPhoto ? (
                       <ActivityIndicator size="small" color={colors.onBrandPrimary} />
                     ) : (
                       <Ionicons name="send" size={16} color={colors.onBrandPrimary} />
@@ -442,6 +537,23 @@ export default function MailScreen() {
       </Modal>
     </View>
   );
+}
+
+function ReplyThumb({ path }: { path: string }) {
+  const [uri, setUri] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    authedPhotoUrl(path).then((u) => {
+      if (alive) setUri(u);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [path]);
+  if (!uri) {
+    return <View style={styles.replyThumbPlaceholder} />;
+  }
+  return <Image source={{ uri }} style={styles.replyThumb} contentFit="cover" />;
 }
 
 const styles = StyleSheet.create({
@@ -654,6 +766,65 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
     gap: spacing.sm,
     marginBottom: spacing.sm,
+  },
+  attachBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceSecondary,
+    borderWidth: 1,
+    borderColor: colors.brandPrimary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  stagedRow: {
+    flexGrow: 0,
+    marginBottom: spacing.sm,
+  },
+  stagedThumb: {
+    width: 60,
+    height: 60,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceTertiary,
+    position: "relative",
+  },
+  stagedThumbImg: {
+    width: "100%",
+    height: "100%",
+    borderRadius: radius.md,
+  },
+  stagedThumbX: {
+    position: "absolute",
+    top: -4,
+    right: -4,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: colors.error,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: colors.surface,
+  },
+  bubblePhotoRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 8,
+  },
+  replyThumb: {
+    width: 110,
+    height: 110,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceTertiary,
+  },
+  replyThumbPlaceholder: {
+    width: 110,
+    height: 110,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceTertiary,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   replyInput: {
     flex: 1,

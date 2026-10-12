@@ -29,6 +29,32 @@ export async function uploadVisitPhoto(visitId: string, uri: string): Promise<st
   return data.path;
 }
 
+export async function uploadReplyPhoto(uri: string): Promise<string> {
+  const token = await getToken();
+  const form = new FormData();
+  if (Platform.OS === "web") {
+    const res = await fetch(uri);
+    const blob = await res.blob();
+    const ext = (blob.type.split("/")[1] || "jpg").split(";")[0];
+    form.append("photo", blob, `reply.${ext}`);
+  } else {
+    const name = uri.split("/").pop() || "reply.jpg";
+    const ext = (name.split(".").pop() || "jpg").toLowerCase();
+    form.append("photo", { uri, name, type: `image/${ext}` } as any);
+  }
+  const r = await fetch(`${BASE}/api/responses/upload-photo`, {
+    method: "POST",
+    body: form,
+    headers: {
+      Accept: "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+  if (!r.ok) throw new Error(await r.text());
+  const data = await r.json();
+  return data.path;
+}
+
 export function photoUrl(path: string): string {
   return `${BASE}/api/files/${path}`;
 }

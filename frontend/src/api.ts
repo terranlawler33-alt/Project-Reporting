@@ -112,10 +112,10 @@ export const api = {
     }),
   getResponseThread: (id: string) =>
     apiRequest<any[]>(`/responses/${id}/thread`),
-  replyToResponse: (id: string, message: string) =>
+  replyToResponse: (id: string, message: string, photos: string[] = []) =>
     apiRequest<any>(`/responses/${id}/reply`, {
       method: "POST",
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, photos }),
     }),
   getMailSchedule: () => apiRequest<any>("/digest/mail-schedule"),
   setMailSchedule: (payload: { enabled: boolean; hour: number; minute: number }) =>
